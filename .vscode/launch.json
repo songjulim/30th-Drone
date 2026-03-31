@@ -1,0 +1,22 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "STM32H753 Debug (ST-LINK)",
+            "type": "cortex-debug",
+            "request": "launch",
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "stm32: build debug",
+            "servertype": "stlink",
+            "stlinkPath": "C:\\ST\\STM32CubeIDE_1.19.0\\STM32CubeIDE\\plugins\\com.st.stm32cube.ide.mcu.externaltools.stlink-gdb-server.win32_2.2.200.202505060755\\tools\\bin\\ST-LINK_gdbserver.exe",
+            "stm32cubeprogrammer": "C:\\ST\\STM32CubeIDE_1.19.0\\STM32CubeIDE\\plugins\\com.st.stm32cube.ide.mcu.externaltools.cubeprogrammer.win32_2.2.200.202503041107\\tools\\bin",
+            "serialNumber": "004A00273033511735393935",
+            "interface": "swd",
+            "device": "STM32H753VITx",
+            "runToEntryPoint": "main",
+            "executable": "${workspaceFolder}\\build\\Debug\\30th_Drone.elf",
+            "gdbPath": "C:\\ST\\STM32CubeIDE_1.19.0\\STM32CubeIDE\\plugins\\com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.win32_1.0.0.202411081344\\tools\\bin\\arm-none-eabi-gdb.exe",
+            "svdFile": "C:\\ST\\STM32CubeIDE_1.19.0\\STM32CubeIDE\\plugins\\com.st.stm32cube.ide.mcu.productdb.debug_2.2.200.202506131328\\resources\\cmsis\\STMicroelectronics_CMSIS_SVD\\STM32H753.svd"
+        }
+    ]
+}

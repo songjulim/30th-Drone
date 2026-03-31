@@ -1,0 +1,420 @@
+#include "debug.h"
+#include "motor.h"
+#include "oled.h"
+#include "main.h"
+#include "sensor.h"
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+extern UART_HandleTypeDef huart1;
+extern TIM_HandleTypeDef htim3;
+extern uint32_t user_step_throttle_compare;
+
+#define UART1_DMA_TX_QUEUE_LENGTH 8U
+#define UART1_DMA_TX_BUFFER_SIZE  160U
+#define UART1_DMA_CACHE_LINE_SIZE 32U
+#define UART1_DMA_RX_BUFFER_SIZE  16U
+#define UART1_TRIGGER_HOLD_MS      1000U
+
+typedef struct
+{
+  uint8_t data[UART1_DMA_TX_BUFFER_SIZE];
+  uint16_t length;
+  uint8_t reserved[30];
+} uart1_dma_tx_entry_t;
+
+static uart1_dma_tx_entry_t uart1_dma_tx_queue[UART1_DMA_TX_QUEUE_LENGTH]
+  __attribute__((aligned(UART1_DMA_CACHE_LINE_SIZE), section(".dma_buffer")));
+static uint8_t uart1_dma_rx_buffer[UART1_DMA_RX_BUFFER_SIZE]
+  __attribute__((aligned(UART1_DMA_CACHE_LINE_SIZE), section(".dma_buffer")));
+static volatile uint8_t uart1_dma_tx_busy = 0U;
+static volatile uint8_t uart1_dma_tx_head = 0U;
+static volatile uint8_t uart1_dma_tx_tail = 0U;
+static volatile uint8_t uart1_dma_tx_count = 0U;
+volatile float uart1_rx_float_value = 0.0f;
+volatile uint8_t uart1_comm_error_flag = 0U;
+volatile uint8_t debug_uart_update_flag = 0U;
+volatile uint8_t debug_oled_update_flag = 0U;
+volatile uint8_t debug_oled_tick_divider = 0U;
+volatile uint32_t main_flag = 0U;
+static volatile uint8_t uart1_trigger_active = 0U;
+static volatile uint32_t uart1_trigger_start_tick = 0U;
+
+static void UART1_DMARxStart(void)
+{
+  if (HAL_UARTEx_ReceiveToIdle_DMA(&huart1,
+                                   uart1_dma_rx_buffer,
+                                   UART1_DMA_RX_BUFFER_SIZE) == HAL_OK)
+  {
+    __HAL_DMA_DISABLE_IT(huart1.hdmarx, DMA_IT_HT);
+  }
+}
+
+static void UART1_DMARxStoreFloat(uint16_t length)
+{
+  char rx_text[UART1_DMA_RX_BUFFER_SIZE];
+  char *parse_end;
+  long trigger_index;
+  float target_yaw_rate_dps;
+
+  if ((length == 0U) || (length >= UART1_DMA_RX_BUFFER_SIZE))
+  {
+    return;
+  }
+
+  memcpy(rx_text, uart1_dma_rx_buffer, length);
+  rx_text[length] = '\0';
+
+  parse_end = rx_text;
+  while (*parse_end == ' ')
+  {
+    parse_end++;
+  }
+
+  if (*parse_end != 'T')
+  {
+    return;
+  }
+
+  parse_end++;
+
+  while (*parse_end == ' ')
+  {
+    parse_end++;
+  }
+
+  if (*parse_end != ',')
+  {
+    return;
+  }
+
+  parse_end++;
+
+  while (*parse_end == ' ')
+  {
+    parse_end++;
+  }
+
+  trigger_index = strtol(parse_end, &parse_end, 10);
+  if ((*parse_end != '\0') && (*parse_end != ' ') && (*parse_end != '\r') && (*parse_end != '\n'))
+  {
+    return;
+  }
+
+  target_yaw_rate_dps = 0.0f;
+
+  if (trigger_index == 1)
+  {
+    target_yaw_rate_dps = 5.0f;
+  }
+  else if (trigger_index == 2)
+  {
+    target_yaw_rate_dps = 10.0f;
+  }
+  else if (trigger_index == 3)
+  {
+    target_yaw_rate_dps = 15.0f;
+  }
+  else if (trigger_index != 0)
+  {
+    return;
+  }
+
+  uart1_rx_float_value = target_yaw_rate_dps;
+  motor_set_rate_targets(0.0f, 0.0f, target_yaw_rate_dps);
+
+  if (target_yaw_rate_dps > 0.0f)
+  {
+    uart1_trigger_active = 1U;
+    uart1_trigger_start_tick = HAL_GetTick();
+  }
+  else
+  {
+    uart1_trigger_active = 0U;
+  }
+
+  debug_oled_update_flag = 1U;
+}
+
+static int DebugAbs(int value)
+{
+  return (value < 0) ? -value : value;
+}
+
+static int DebugSignScaledTenths(float value)
+{
+  return (value < 0.0f) ? -DebugAbs((int)(value * 10.0f)) : DebugAbs((int)(value * 10.0f));
+}
+
+static int DebugSignScaledThousandths(float value)
+{
+  return (value < 0.0f) ? -DebugAbs((int)(value * 1000.0f)) : DebugAbs((int)(value * 1000.0f));
+}
+
+static int DebugIntegerPartFromScaled(int scaled_value, int scale)
+{
+  if ((scaled_value < 0) && (DebugAbs(scaled_value) < scale))
+  {
+    return -0;
+  }
+
+  return scaled_value / scale;
+}
+
+static uint32_t UART1_DMATxEnterCritical(void)
+{
+  uint32_t primask = __get_PRIMASK();
+  __disable_irq();
+  return primask;
+}
+
+static void UART1_DMATxExitCritical(uint32_t primask)
+{
+  if (primask == 0U)
+  {
+    __enable_irq();
+  }
+}
+
+// static void UART1_DMATxCleanCache(const void *address, uint32_t length)
+// {
+//   //uintptr_t aligned_address = ((uintptr_t)address) & ~(uintptr_t)(UART1_DMA_CACHE_LINE_SIZE - 1U);
+//   //uint32_t aligned_length = (uint32_t)(((uintptr_t)address + length + (UART1_DMA_CACHE_LINE_SIZE - 1U)) - aligned_address);
+
+//   //SCB_CleanDCache_by_Addr((uint32_t *)aligned_address, (int32_t)aligned_length);
+// }
+
+static void UART1_DMATxStartNext(void)
+{
+  uint32_t primask;
+  uint8_t queue_tail;
+  HAL_StatusTypeDef status;
+
+  primask = UART1_DMATxEnterCritical();
+
+  if ((uart1_dma_tx_busy != 0U) || (uart1_dma_tx_count == 0U))
+  {
+    UART1_DMATxExitCritical(primask);
+    return;
+  }
+
+  queue_tail = uart1_dma_tx_tail;
+  uart1_dma_tx_busy = 1U;
+  UART1_DMATxExitCritical(primask);
+
+  //UART1_DMATxCleanCache(uart1_dma_tx_queue[queue_tail].data, UART1_DMA_TX_BUFFER_SIZE);
+
+  status = HAL_UART_Transmit_DMA(&huart1,
+                                 uart1_dma_tx_queue[queue_tail].data,
+                                 uart1_dma_tx_queue[queue_tail].length);
+
+  if (status != HAL_OK)
+  {
+    HAL_UART_Abort(&huart1);
+
+    primask = UART1_DMATxEnterCritical();
+    uart1_dma_tx_busy = 0U;
+    UART1_DMATxExitCritical(primask);
+  }
+}
+
+static HAL_StatusTypeDef UART1_DMATxEnqueue(const uint8_t *data, uint16_t length)
+{
+  uint32_t primask;
+  uint8_t queue_head;
+
+  if ((data == NULL) || (length == 0U) || (length > UART1_DMA_TX_BUFFER_SIZE))
+  {
+    return HAL_ERROR;
+  }
+
+  primask = UART1_DMATxEnterCritical();
+
+  if (uart1_dma_tx_count >= UART1_DMA_TX_QUEUE_LENGTH)
+  {
+    UART1_DMATxExitCritical(primask);
+    return HAL_BUSY;
+  }
+
+  queue_head = uart1_dma_tx_head;
+  memcpy(uart1_dma_tx_queue[queue_head].data, data, length);
+  uart1_dma_tx_queue[queue_head].length = length;
+  uart1_dma_tx_head = (uint8_t)((queue_head + 1U) % UART1_DMA_TX_QUEUE_LENGTH);
+  uart1_dma_tx_count++;
+
+  UART1_DMATxExitCritical(primask);
+
+  UART1_DMATxStartNext();
+
+  return HAL_OK;
+}
+
+static void Debug_SendUartSnapshot(void)
+{
+  int gz = (int)(sensor_gyro_z_dps * 100.0f);
+
+  (void)uart1_printf("%c%d.%02d\r\n",
+                     (gz < 0) ? '-' : ' ', DebugAbs(gz) / 100, DebugAbs(gz) % 100);
+}
+
+static void Debug_UpdateOledSnapshot(void)
+{
+  int gx_tenths = DebugSignScaledTenths(sensor_gyro_x_dps);
+  int gy_tenths = DebugSignScaledTenths(sensor_gyro_y_dps);
+  int gz_tenths = DebugSignScaledTenths(sensor_gyro_z_dps);
+  int ax_thousandths = DebugSignScaledThousandths(sensor_accel_x_g);
+  int ay_thousandths = DebugSignScaledThousandths(sensor_accel_y_g);
+  int az_thousandths = DebugSignScaledThousandths(sensor_accel_z_g);
+  int roll_tenths = DebugSignScaledTenths(sensor_roll_deg);
+  int pitch_tenths = DebugSignScaledTenths(sensor_pitch_deg);
+  int yaw_tenths = DebugSignScaledTenths(sensor_yaw_deg);
+  char gx_sign = (gx_tenths < 0) ? '-' : ' ';
+  char gy_sign = (gy_tenths < 0) ? '-' : ' ';
+  char gz_sign = (gz_tenths < 0) ? '-' : ' ';
+  char ax_sign = (ax_thousandths < 0) ? '-' : ' ';
+  char ay_sign = (ay_thousandths < 0) ? '-' : ' ';
+  char az_sign = (az_thousandths < 0) ? '-' : ' ';
+  char roll_sign = (roll_tenths < 0) ? '-' : ' ';
+  char pitch_sign = (pitch_tenths < 0) ? '-' : ' ';
+  char yaw_sign = (yaw_tenths < 0) ? '-' : ' ';
+
+  OLED_Clear();
+  OLED_Printf(0, 0, "GX %c%d.%01d", gx_sign, DebugIntegerPartFromScaled(gx_tenths, 10), DebugAbs(gx_tenths) % 10);
+  OLED_Printf(1, 0, "GY %c%d.%01d", gy_sign, DebugIntegerPartFromScaled(gy_tenths, 10), DebugAbs(gy_tenths) % 10);
+  OLED_Printf(2, 0, "GZ %c%d.%01d", gz_sign, DebugIntegerPartFromScaled(gz_tenths, 10), DebugAbs(gz_tenths) % 10);
+  OLED_Printf(3, 0, "AX %c%d.%03d", ax_sign, DebugIntegerPartFromScaled(ax_thousandths, 1000), DebugAbs(ax_thousandths) % 1000);
+  OLED_Printf(4, 0, "AY %c%d.%03d", ay_sign, DebugIntegerPartFromScaled(ay_thousandths, 1000), DebugAbs(ay_thousandths) % 1000);
+  OLED_Printf(5, 0, "AZ %c%d.%03d", az_sign, DebugIntegerPartFromScaled(az_thousandths, 1000), DebugAbs(az_thousandths) % 1000);
+  OLED_Printf(6, 0, "R %c%d.%01d P %c%d.%01d", roll_sign, DebugIntegerPartFromScaled(roll_tenths, 10), DebugAbs(roll_tenths) % 10,
+                                          pitch_sign, DebugIntegerPartFromScaled(pitch_tenths, 10), DebugAbs(pitch_tenths) % 10);
+  OLED_Printf(7, 0, "Y %c%d.%01d", yaw_sign, DebugIntegerPartFromScaled(yaw_tenths, 10), DebugAbs(yaw_tenths) % 10);
+  OLED_Update();
+}
+
+void debug_init(void)
+{
+  debug_uart_update_flag = 0U;
+  debug_oled_update_flag = 0U;
+  debug_oled_tick_divider = 0U;
+  main_flag = 0U;
+  uart1_rx_float_value = 0.0f;
+  uart1_comm_error_flag = 0U;
+  uart1_trigger_active = 0U;
+  uart1_trigger_start_tick = 0U;
+  UART1_DMARxStart();
+}
+
+void debug_process(void)
+{
+  if ((uart1_trigger_active != 0U) &&
+      ((HAL_GetTick() - uart1_trigger_start_tick) >= UART1_TRIGGER_HOLD_MS))
+  {
+    uart1_trigger_active = 0U;
+    uart1_rx_float_value = 0.0f;
+    motor_set_rate_targets(0.0f, 0.0f, 0.0f);
+    debug_oled_update_flag = 1U;
+  }
+
+  if (debug_uart_update_flag != 0U)
+  {
+    debug_uart_update_flag = 0U;
+    Debug_SendUartSnapshot();
+  }
+
+  if (debug_oled_update_flag != 0U)
+  {
+    debug_oled_update_flag = 0U;
+    // OLED_Clear();
+    // OLED_Printf(3, 0, "MOTOR = %d", user_step_throttle_compare);
+    // OLED_Update();
+    Debug_UpdateOledSnapshot();
+  }
+}
+
+int uart1_printf(const char *format, ...)
+{
+  uint8_t tx_buffer[UART1_DMA_TX_BUFFER_SIZE];
+  int length;
+  va_list args;
+
+  if (format == NULL)
+  {
+    return -1;
+  }
+
+  va_start(args, format);
+  length = vsnprintf((char *)tx_buffer, sizeof(tx_buffer), format, args);
+  va_end(args);
+
+  if (length <= 0)
+  {
+    return length;
+  }
+
+  if (length >= (int)sizeof(tx_buffer))
+  {
+    length = (int)sizeof(tx_buffer) - 1;
+  }
+
+  if (UART1_DMATxEnqueue(tx_buffer, (uint16_t)length) != HAL_OK)
+  {
+    return -1;
+  }
+
+  return length;
+}
+
+void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
+{
+  uint32_t primask;
+
+  if ((huart == NULL) || (huart->Instance != USART1))
+  {
+    return;
+  }
+
+  primask = UART1_DMATxEnterCritical();
+
+  if (uart1_dma_tx_count > 0U)
+  {
+    uart1_dma_tx_tail = (uint8_t)((uart1_dma_tx_tail + 1U) % UART1_DMA_TX_QUEUE_LENGTH);
+    uart1_dma_tx_count--;
+  }
+
+  uart1_dma_tx_busy = 0U;
+  UART1_DMATxExitCritical(primask);
+
+  UART1_DMATxStartNext();
+}
+
+void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
+{
+  uint32_t primask;
+
+  if ((huart == NULL) || (huart->Instance != USART1))
+  {
+    return;
+  }
+
+  primask = UART1_DMATxEnterCritical();
+
+  uart1_dma_tx_busy = 0U;
+  UART1_DMATxExitCritical(primask);
+
+  (void)HAL_UART_AbortTransmit(huart);
+
+  UART1_DMARxStart();
+}
+
+void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
+{
+  if ((huart == NULL) || (huart->Instance != USART1))
+  {
+    return;
+  }
+
+  UART1_DMARxStoreFloat(Size);
+  UART1_DMARxStart();
+}
