@@ -50,6 +50,8 @@ ADC_HandleTypeDef hadc1;
 
 I2C_HandleTypeDef hi2c1;
 I2C_HandleTypeDef hi2c3;
+DMA_HandleTypeDef hdma_i2c1_tx;
+DMA_HandleTypeDef hdma_i2c1_rx;
 DMA_HandleTypeDef hdma_i2c3_tx;
 
 SPI_HandleTypeDef hspi1;
@@ -236,31 +238,19 @@ int main(void)
     /* USER CODE BEGIN 3 */
     sensor_process();
     switch_update();
-    debug_process();
+    //debug_process();
+    if(imuimu==1)
+    {
+      (void)uart1_printf("IMU\r\n");
+    }
     if(sw_u_flag)
     {
       HAL_Delay(100);
       motor_reset_rate_pid();
-      motor_set_throttle(1150U);
+      motor_set_throttle(1100U);
       motor_set_rate_targets(0, 0, 0);
       while(1)
       {
-        if(uart1_comm_error_flag)
-        {
-          motor_set_rate_targets(0, 0, 0);
-          motor_stop();
-          HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_1);
-          HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_2);
-          HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_3);
-          HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_4);
-          OLED_Clear();
-          OLED_Printf(4, 0, "STLINK LOST");
-          OLED_Update();
-          while(1)
-          {
-            
-          }
-        }
         switch_update();
         debug_process();
         if(main_flag != 0U)
@@ -425,7 +415,7 @@ static void MX_I2C1_Init(void)
 
   /* USER CODE END I2C1_Init 1 */
   hi2c1.Instance = I2C1;
-  hi2c1.Init.Timing = 0x307075B1;
+  hi2c1.Init.Timing = 0x0050174F;
   hi2c1.Init.OwnAddress1 = 0;
   hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
   hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
@@ -451,6 +441,10 @@ static void MX_I2C1_Init(void)
   {
     Error_Handler();
   }
+
+  /** I2C Enable Fast Mode Plus
+  */
+  HAL_I2CEx_EnableFastModePlus(I2C_FASTMODEPLUS_I2C1);
   /* USER CODE BEGIN I2C1_Init 2 */
 
   /* USER CODE END I2C1_Init 2 */
@@ -1048,6 +1042,12 @@ static void MX_DMA_Init(void)
   /* DMA1_Stream4_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA1_Stream4_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA1_Stream4_IRQn);
+  /* DMA1_Stream5_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Stream5_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Stream5_IRQn);
+  /* DMA1_Stream6_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Stream6_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Stream6_IRQn);
 
 }
 

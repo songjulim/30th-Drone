@@ -12,6 +12,7 @@ extern volatile float sensor_accel_z_g;
 extern volatile float sensor_roll_deg;
 extern volatile float sensor_pitch_deg;
 extern volatile float sensor_yaw_deg;
+extern volatile int imuimu;
 
 HAL_StatusTypeDef sensor_init(void);
 void sensor_process(void);

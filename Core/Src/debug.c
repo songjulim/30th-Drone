@@ -34,7 +34,6 @@ static volatile uint8_t uart1_dma_tx_head = 0U;
 static volatile uint8_t uart1_dma_tx_tail = 0U;
 static volatile uint8_t uart1_dma_tx_count = 0U;
 volatile float uart1_rx_float_value = 0.0f;
-volatile uint8_t uart1_comm_error_flag = 0U;
 volatile uint8_t debug_uart_update_flag = 0U;
 volatile uint8_t debug_oled_update_flag = 0U;
 volatile uint8_t debug_oled_tick_divider = 0U;
@@ -264,18 +263,12 @@ static void Debug_UpdateOledSnapshot(void)
   int gx_tenths = DebugSignScaledTenths(sensor_gyro_x_dps);
   int gy_tenths = DebugSignScaledTenths(sensor_gyro_y_dps);
   int gz_tenths = DebugSignScaledTenths(sensor_gyro_z_dps);
-  int ax_thousandths = DebugSignScaledThousandths(sensor_accel_x_g);
-  int ay_thousandths = DebugSignScaledThousandths(sensor_accel_y_g);
-  int az_thousandths = DebugSignScaledThousandths(sensor_accel_z_g);
   int roll_tenths = DebugSignScaledTenths(sensor_roll_deg);
   int pitch_tenths = DebugSignScaledTenths(sensor_pitch_deg);
   int yaw_tenths = DebugSignScaledTenths(sensor_yaw_deg);
   char gx_sign = (gx_tenths < 0) ? '-' : ' ';
   char gy_sign = (gy_tenths < 0) ? '-' : ' ';
   char gz_sign = (gz_tenths < 0) ? '-' : ' ';
-  char ax_sign = (ax_thousandths < 0) ? '-' : ' ';
-  char ay_sign = (ay_thousandths < 0) ? '-' : ' ';
-  char az_sign = (az_thousandths < 0) ? '-' : ' ';
   char roll_sign = (roll_tenths < 0) ? '-' : ' ';
   char pitch_sign = (pitch_tenths < 0) ? '-' : ' ';
   char yaw_sign = (yaw_tenths < 0) ? '-' : ' ';
@@ -284,9 +277,8 @@ static void Debug_UpdateOledSnapshot(void)
   OLED_Printf(0, 0, "GX %c%d.%01d", gx_sign, DebugIntegerPartFromScaled(gx_tenths, 10), DebugAbs(gx_tenths) % 10);
   OLED_Printf(1, 0, "GY %c%d.%01d", gy_sign, DebugIntegerPartFromScaled(gy_tenths, 10), DebugAbs(gy_tenths) % 10);
   OLED_Printf(2, 0, "GZ %c%d.%01d", gz_sign, DebugIntegerPartFromScaled(gz_tenths, 10), DebugAbs(gz_tenths) % 10);
-  OLED_Printf(3, 0, "AX %c%d.%03d", ax_sign, DebugIntegerPartFromScaled(ax_thousandths, 1000), DebugAbs(ax_thousandths) % 1000);
-  OLED_Printf(4, 0, "AY %c%d.%03d", ay_sign, DebugIntegerPartFromScaled(ay_thousandths, 1000), DebugAbs(ay_thousandths) % 1000);
-  OLED_Printf(5, 0, "AZ %c%d.%03d", az_sign, DebugIntegerPartFromScaled(az_thousandths, 1000), DebugAbs(az_thousandths) % 1000);
+  OLED_Printf(4, 0, "                ");
+  OLED_Printf(5, 0, "                ");
   OLED_Printf(6, 0, "R %c%d.%01d P %c%d.%01d", roll_sign, DebugIntegerPartFromScaled(roll_tenths, 10), DebugAbs(roll_tenths) % 10,
                                           pitch_sign, DebugIntegerPartFromScaled(pitch_tenths, 10), DebugAbs(pitch_tenths) % 10);
   OLED_Printf(7, 0, "Y %c%d.%01d", yaw_sign, DebugIntegerPartFromScaled(yaw_tenths, 10), DebugAbs(yaw_tenths) % 10);
@@ -300,7 +292,6 @@ void debug_init(void)
   debug_oled_tick_divider = 0U;
   main_flag = 0U;
   uart1_rx_float_value = 0.0f;
-  uart1_comm_error_flag = 0U;
   uart1_trigger_active = 0U;
   uart1_trigger_start_tick = 0U;
   UART1_DMARxStart();

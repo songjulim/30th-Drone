@@ -58,6 +58,7 @@ volatile float sensor_accel_z_g = 0.0f;
 volatile float sensor_roll_deg = 0.0f;
 volatile float sensor_pitch_deg = 0.0f;
 volatile float sensor_yaw_deg = 0.0f;
+volatile int imuimu = 0;
 
 typedef struct
 {
@@ -111,6 +112,7 @@ static float attitude_pitch_reference_deg = 0.0f;
 static volatile uint8_t spi2_motion_dma_busy = 0U;
 static volatile uint8_t motion_sample_ready = 0U;
 static volatile uint8_t motion_read_error = 0U;
+static float LSM6DSR_LowPassStep(float previous_value, float input_value, float alpha);
 
 static float LSM6DSR_LowPassStep(float previous_value, float input_value, float alpha)
 {
@@ -618,9 +620,12 @@ void sensor_process(void)
     return;
   }
 
-  motion_sample_ready = 0U;
-  LSM6DSR_FilterMotion(&latest_motion_sample);
-  LSM6DSR_UpdateAttitude(&filtered_motion);
+  if (motion_sample_ready != 0U)
+  {
+    motion_sample_ready = 0U;
+    LSM6DSR_FilterMotion(&latest_motion_sample);
+    LSM6DSR_UpdateAttitude(&filtered_motion);
+  }
 }
 
 void sensor_get_attitude(float *roll_deg, float *pitch_deg, float *yaw_deg)
@@ -677,6 +682,7 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
     if (spi2_motion_dma_busy == 0U)
     {
       motion_read_error = 1U;
+      imuimu=1;
     }
   }
 }

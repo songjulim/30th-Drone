@@ -8,7 +8,6 @@ void debug_process(void);
 int uart1_printf(const char *format, ...);
 
 extern volatile float uart1_rx_float_value;
-extern volatile uint8_t uart1_comm_error_flag;
 
 extern volatile uint8_t debug_uart_update_flag;
 extern volatile uint8_t debug_oled_update_flag;
