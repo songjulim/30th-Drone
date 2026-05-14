@@ -76,10 +76,7 @@ DMA_HandleTypeDef hdma_usart6_tx;
 
 /* USER CODE BEGIN PV */
 
-static uint32_t user_base_throttle_compare = 1000U;
 uint32_t user_step_throttle_compare = 1000U;
-static float user_target_roll_rate_dps = 0.0f;
-static float user_target_pitch_rate_dps = 0.0f;
 
 /* USER CODE END PV */
 
@@ -103,9 +100,6 @@ static void MX_TIM3_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_USART6_UART_Init(void);
 /* USER CODE BEGIN PFP */
-
-static void user_set_base_throttle(void);
-static void user_set_target_rate(void);
 
 /* USER CODE END PFP */
 
