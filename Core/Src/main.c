@@ -1,27 +1,29 @@
 /* USER CODE BEGIN Header */
 /**
-  ******************************************************************************
-  * @file           : main.c
-  * @brief          : Main program body
-  ******************************************************************************
-  * @attention
-  *
-  * Copyright (c) 2026 STMicroelectronics.
-  * All rights reserved.
-  *
-  * This software is licensed under terms that can be found in the LICENSE file
-  * in the root directory of this software component.
-  * If no LICENSE file comes with this software, it is provided AS-IS.
-  *
-  ******************************************************************************
-  */
+ ******************************************************************************
+ * @file           : main.c
+ * @brief          : Main program body
+ ******************************************************************************
+ * @attention
+ *
+ * Copyright (c) 2026 STMicroelectronics.
+ * All rights reserved.
+ *
+ * This software is licensed under terms that can be found in the LICENSE file
+ * in the root directory of this software component.
+ * If no LICENSE file comes with this software, it is provided AS-IS.
+ *
+ ******************************************************************************
+ */
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "bno085.h"
 #include "debug.h"
+#include "gnss.h"
 #include "motor.h"
 #include "oled.h"
 #include "sensor.h"
@@ -77,6 +79,9 @@ DMA_HandleTypeDef hdma_usart6_tx;
 /* USER CODE BEGIN PV */
 
 uint32_t user_step_throttle_compare = 1000U;
+static float user_target_roll_rate_dps = 0.0f;
+static float user_target_pitch_rate_dps = 0.0f;
+static char gnss_sentence[128];
 
 /* USER CODE END PV */
 
@@ -106,33 +111,25 @@ static void MX_USART6_UART_Init(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
-
-void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
-{
-  if (htim == NULL)
-  {
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
+  if (htim == NULL) {
     return;
   }
-  if(htim->Instance == TIM2)
-  {
-    if (main_flag < UINT32_MAX)
-    {
+  if (htim->Instance == TIM2) {
+    if (main_flag < UINT32_MAX) {
       main_flag++;
     }
   }
-  if(htim->Instance == TIM3)
-  {
+  if (htim->Instance == TIM3) {
     debug_uart_update_flag = 1U;
     debug_oled_tick_divider++;
 
-    if (debug_oled_tick_divider >= 5U)
-    {
+    if (debug_oled_tick_divider >= 5U) {
       debug_oled_tick_divider = 0U;
       debug_oled_update_flag = 1U;
       debug_uart6_update_flag = 1U;
-    } 
+    }
   }
-
 }
 /* USER CODE END 0 */
 
@@ -184,17 +181,21 @@ int main(void)
   MX_TIM2_Init();
   MX_USART6_UART_Init();
   /* USER CODE BEGIN 2 */
+
+  uart1_printf("\r\n\r\n");
+  uart1_printf(" ======== ★☆ Drone Firmware ★☆ ========\r\n");
+  uart1_printf("=====  BackStudyMaster Lim Song ju  ======\r\n");
+  uart1_printf("================ STM32H753 ===============\r\n");
+
   switch_init();
   OLED_Init();
   OLED_Clear();
   OLED_Printf(2, 0, "System Start!");
   OLED_Printf(4, 0, "Press Up!!");
   OLED_Update();
-  while(1)
-  {
+  while (1) {
     switch_update();
-    if(sw_u_flag==1)
-    {
+    if (sw_u_flag == 1) {
       OLED_Clear();
       OLED_Printf(4, 0, "Loading...");
       OLED_Update();
@@ -202,25 +203,27 @@ int main(void)
     }
   }
   HAL_Delay(2000);
-  while (sensor_init() != HAL_OK)
-  {
+  while (sensor_init() != HAL_OK) {
     //(void)uart1_printf("sensor init retry\r\n");
     HAL_Delay(100U);
   }
 
   //(void)uart1_printf("sensor init ok\r\n");
 
-  
   //(void)uart1_printf("oled init ok\r\n");
 
   switch_init();
   //(void)uart1_printf("switch init ok\r\n");
   debug_init();
+  (void)bno085_communication_test();
+  if (gnss_init() == HAL_OK) {
+    (void)uart1_printf("gnss init ok\r\n");
+  } else {
+    (void)uart1_printf("gnss init error\r\n");
+  }
   //(void)uart1_printf("debug init ok\r\n");
 
   //(void)uart1_printf("System Start\r\n");
-
-  
 
   (void)HAL_TIM_Base_Start_IT(&htim2);
   (void)HAL_TIM_Base_Start_IT(&htim3);
@@ -231,41 +234,36 @@ int main(void)
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  while (1)
-  {
+  while (1) {
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
     sensor_process();
     switch_update();
     debug_process();
-    if(imuimu==1)
-    {
+    if (gnss_read_line(gnss_sentence, sizeof(gnss_sentence))) {
+      (void)uart1_printf("%s\r\n", gnss_sentence);
+    }
+    if (imuimu == 1) {
       (void)uart1_printf("IMU\r\n");
     }
-    if(sw_u_flag)
-    {
+    if (sw_u_flag) {
       HAL_Delay(100);
       motor_reset_rate_pid();
       motor_set_throttle(1060U);
       motor_set_rate_targets(0, 0, 0);
-      while(1)
-      {
+      while (1) {
         switch_update();
         debug_process();
-        if(main_flag != 0U)
-        {
+        if (main_flag != 0U) {
           main_flag--;
           sensor_process();
-          motor_rate_pid_update();
         }
-        
-        if(sw_d_flag)
-        {
+
+        if (sw_d_flag) {
           motor_stop();
           break;
         }
-
       }
     }
   }
@@ -522,11 +520,11 @@ static void MX_SPI1_Init(void)
   hspi1.Instance = SPI1;
   hspi1.Init.Mode = SPI_MODE_MASTER;
   hspi1.Init.Direction = SPI_DIRECTION_2LINES;
-  hspi1.Init.DataSize = SPI_DATASIZE_4BIT;
-  hspi1.Init.CLKPolarity = SPI_POLARITY_LOW;
-  hspi1.Init.CLKPhase = SPI_PHASE_1EDGE;
+  hspi1.Init.DataSize = SPI_DATASIZE_8BIT;
+  hspi1.Init.CLKPolarity = SPI_POLARITY_HIGH;
+  hspi1.Init.CLKPhase = SPI_PHASE_2EDGE;
   hspi1.Init.NSS = SPI_NSS_SOFT;
-  hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_2;
+  hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_128;
   hspi1.Init.FirstBit = SPI_FIRSTBIT_MSB;
   hspi1.Init.TIMode = SPI_TIMODE_DISABLE;
   hspi1.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
@@ -1133,7 +1131,10 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_WritePin(GPIOC, SPI4_RESET_Pin|SPI1_RESET_Pin|GPIO_PIN_8, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOA, UART2_RESET_Pin|SPI1_CS_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(UART2_RESET_GPIO_Port, UART2_RESET_Pin, GPIO_PIN_SET);
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(SPI1_CS_GPIO_Port, SPI1_CS_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(SPI1_WAKE_GPIO_Port, SPI1_WAKE_Pin, GPIO_PIN_RESET);
@@ -1268,8 +1269,7 @@ void Error_Handler(void)
   /* USER CODE BEGIN Error_Handler_Debug */
   /* User can add his own implementation to report the HAL error return state */
   __disable_irq();
-  while (1)
-  {
+  while (1) {
   }
   /* USER CODE END Error_Handler_Debug */
 }
@@ -1284,8 +1284,9 @@ void Error_Handler(void)
 void assert_failed(uint8_t *file, uint32_t line)
 {
   /* USER CODE BEGIN 6 */
-  /* User can add his own implementation to report the file name and line number,
-     ex: printf("Wrong parameters value: file %s on line %d\r\n", file, line) */
+  /* User can add his own implementation to report the file name and line
+     number, ex: printf("Wrong parameters value: file %s on line %d\r\n", file,
+     line) */
   /* USER CODE END 6 */
 }
 #endif /* USE_FULL_ASSERT */

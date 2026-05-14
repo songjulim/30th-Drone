@@ -1,4 +1,5 @@
 #include "debug.h"
+#include "gnss.h"
 #include "motor.h"
 #include "oled.h"
 #include "main.h"
@@ -595,6 +596,12 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
 
   if (huart == NULL)
   {
+    return;
+  }
+
+  if (huart->Instance == USART2)
+  {
+    gnss_handle_uart_error(huart);
     return;
   }
 

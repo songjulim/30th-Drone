@@ -5,7 +5,9 @@
 
 void debug_init(void);
 void debug_process(void);
+void debug_set_bridge_mode(uint8_t active);
 int uart1_printf(const char *format, ...);
+HAL_StatusTypeDef debug_uart1_write_raw(const uint8_t *data, uint16_t length);
 
 extern volatile float uart1_rx_float_value;
 extern volatile float uart6_rx_float_value;
