@@ -22,6 +22,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "debug.h"
+#include "gnss.h"
 #include "motor.h"
 #include "oled.h"
 #include "sensor.h"
@@ -80,6 +81,7 @@ static uint32_t user_base_throttle_compare = 1000U;
 uint32_t user_step_throttle_compare = 1000U;
 static float user_target_roll_rate_dps = 0.0f;
 static float user_target_pitch_rate_dps = 0.0f;
+static char gnss_sentence[128];
 
 /* USER CODE END PV */
 
@@ -222,6 +224,14 @@ int main(void)
   switch_init();
   //(void)uart1_printf("switch init ok\r\n");
   debug_init();
+  if (gnss_init() == HAL_OK)
+  {
+    (void)uart1_printf("gnss init ok\r\n");
+  }
+  else
+  {
+    (void)uart1_printf("gnss init error\r\n");
+  }
   //(void)uart1_printf("debug init ok\r\n");
 
   //(void)uart1_printf("System Start\r\n");
@@ -245,6 +255,10 @@ int main(void)
     sensor_process();
     switch_update();
     debug_process();
+    if (gnss_read_line(gnss_sentence, sizeof(gnss_sentence)))
+    {
+      (void)uart1_printf("%s\r\n", gnss_sentence);
+    }
     if(imuimu==1)
     {
       (void)uart1_printf("IMU\r\n");
@@ -263,7 +277,6 @@ int main(void)
         {
           main_flag--;
           sensor_process();
-          motor_rate_pid_update();
         }
         
         if(sw_d_flag)
@@ -991,7 +1004,7 @@ static void MX_USART2_UART_Init(void)
 
   /* USER CODE END USART2_Init 1 */
   huart2.Instance = USART2;
-  huart2.Init.BaudRate = 115200;
+  huart2.Init.BaudRate = 38400;
   huart2.Init.WordLength = UART_WORDLENGTH_8B;
   huart2.Init.StopBits = UART_STOPBITS_1;
   huart2.Init.Parity = UART_PARITY_NONE;
@@ -1139,7 +1152,10 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_WritePin(GPIOC, SPI4_RESET_Pin|SPI1_RESET_Pin|GPIO_PIN_8, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOA, UART2_RESET_Pin|SPI1_CS_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(UART2_RESET_GPIO_Port, UART2_RESET_Pin, GPIO_PIN_SET);
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(SPI1_CS_GPIO_Port, SPI1_CS_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(SPI1_WAKE_GPIO_Port, SPI1_WAKE_Pin, GPIO_PIN_RESET);
