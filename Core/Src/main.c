@@ -79,8 +79,6 @@ DMA_HandleTypeDef hdma_usart6_tx;
 /* USER CODE BEGIN PV */
 
 uint32_t user_step_throttle_compare = 1000U;
-static float user_target_roll_rate_dps = 0.0f;
-static float user_target_pitch_rate_dps = 0.0f;
 static char gnss_sentence[128];
 
 /* USER CODE END PV */
@@ -240,7 +238,7 @@ int main(void)
     /* USER CODE BEGIN 3 */
     sensor_process();
     switch_update();
-    debug_process();
+    //debug_process();
     if (gnss_read_line(gnss_sentence, sizeof(gnss_sentence))) {
       (void)uart1_printf("%s\r\n", gnss_sentence);
     }
@@ -258,6 +256,7 @@ int main(void)
         if (main_flag != 0U) {
           main_flag--;
           sensor_process();
+          motor_rate_pid_update();
         }
 
         if (sw_d_flag) {
