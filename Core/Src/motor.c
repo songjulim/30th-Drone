@@ -25,24 +25,24 @@ typedef struct
 
 static motor_rate_pid_axis_t roll_rate_pid =
 {
-  .kp = 3.00f,      //3.00f
-  .kd = 0.008f,     //0.008f
+  .kp = 0.00f,      //3.00f
+  .kd = 0.00f,     //0.008f
   .previous_measurement_dps = 0.0f,
   .initialized = 0U
 };
 
 static motor_rate_pid_axis_t pitch_rate_pid =
 {
-  .kp = 4.00f,      //4.00f
-  .kd = 0.005f,     //0.005f
+  .kp = 0.00f,      //4.00f
+  .kd = 0.00f,     //0.005f
   .previous_measurement_dps = 0.0f,
   .initialized = 0U
 };
 
 static motor_rate_pid_axis_t yaw_rate_pid =
 {
-  .kp = 4.50f,
-  .kd = 0.005f,
+  .kp = 0.00f,
+  .kd = 0.00f,
   .previous_measurement_dps = 0.0f,
   .initialized = 0U
 };
@@ -231,6 +231,7 @@ void motor_rate_pid_update(void)
   float base_compare;
 
   base_compare = (float)motor_throttle_compare;
+
   roll_output = motor_rate_pid_step(&roll_rate_pid,
                                     motor_target_roll_rate_dps,
                                     sensor_gyro_x_dps);
@@ -241,10 +242,10 @@ void motor_rate_pid_update(void)
                                    motor_target_yaw_rate_dps,
                                    sensor_gyro_z_dps);
 
-  motor_set_channels(motor_clamp_compare(base_compare - pitch_output - roll_output - yaw_output),
-                     motor_clamp_compare(base_compare - pitch_output + roll_output + yaw_output),
+  motor_set_channels(motor_clamp_compare(base_compare + pitch_output - roll_output + yaw_output),
                      motor_clamp_compare(base_compare + pitch_output + roll_output - yaw_output),
-                     motor_clamp_compare(base_compare + pitch_output - roll_output + yaw_output));
+                     motor_clamp_compare(base_compare - pitch_output + roll_output + yaw_output),
+                     motor_clamp_compare(base_compare - pitch_output - roll_output - yaw_output));
 }
 
 void motor_stop(void)
