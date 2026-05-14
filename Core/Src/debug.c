@@ -4,6 +4,7 @@
 #include "oled.h"
 #include "main.h"
 #include "sensor.h"
+#include "uart_bridge.h"
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -63,6 +64,7 @@ volatile uint32_t main_flag = 0U;
 static volatile uint8_t uart1_trigger_active = 0U;
 static volatile uint32_t uart1_trigger_start_tick = 0U;
 static volatile uint8_t uart6_start_received = 0U;
+static volatile uint8_t debug_bridge_mode_active = 0U;
 
 static HAL_StatusTypeDef UART6_DMATxEnqueue(const uint8_t *data, uint16_t length);
 
@@ -471,12 +473,34 @@ void debug_init(void)
   uart1_trigger_start_tick = 0U;
   uart6_rx_float_value = 0.0f;
   uart6_start_received = 0U;
+  debug_bridge_mode_active = 0U;
+  uart1_dma_tx_busy = 0U;
+  uart1_dma_tx_head = 0U;
+  uart1_dma_tx_tail = 0U;
+  uart1_dma_tx_count = 0U;
   uart6_dma_tx_busy = 0U;
   uart6_dma_tx_head = 0U;
   uart6_dma_tx_tail = 0U;
   uart6_dma_tx_count = 0U;
   UART1_DMARxStart();
   UART6_DMARxStart();
+}
+
+void debug_set_bridge_mode(uint8_t active)
+{
+  uint32_t primask = UART1_DMATxEnterCritical();
+
+  debug_bridge_mode_active = active;
+  uart1_dma_tx_busy = 0U;
+  uart1_dma_tx_head = 0U;
+  uart1_dma_tx_tail = 0U;
+  uart1_dma_tx_count = 0U;
+
+  UART1_DMATxExitCritical(primask);
+
+  (void)HAL_UART_AbortTransmit(&huart1);
+  (void)HAL_UART_AbortReceive(&huart1);
+  UART1_DMARxStart();
 }
 
 void debug_process(void)
@@ -493,7 +517,10 @@ void debug_process(void)
   if (debug_uart_update_flag != 0U)
   {
     debug_uart_update_flag = 0U;
-    Debug_SendUartSnapshot();
+    if (debug_bridge_mode_active == 0U)
+    {
+      Debug_SendUartSnapshot();
+    }
   }
 
   if (debug_oled_update_flag != 0U)
@@ -523,6 +550,11 @@ int uart1_printf(const char *format, ...)
     return -1;
   }
 
+  if (debug_bridge_mode_active != 0U)
+  {
+    return 0;
+  }
+
   va_start(args, format);
   length = vsnprintf((char *)tx_buffer, sizeof(tx_buffer), format, args);
   va_end(args);
@@ -543,6 +575,16 @@ int uart1_printf(const char *format, ...)
   }
 
   return length;
+}
+
+HAL_StatusTypeDef debug_uart1_write_raw(const uint8_t *data, uint16_t length)
+{
+  if (debug_bridge_mode_active == 0U)
+  {
+    return HAL_BUSY;
+  }
+
+  return UART1_DMATxEnqueue(data, length);
 }
 
 void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
@@ -647,6 +689,13 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
 
   if (huart->Instance != USART1)
   {
+    return;
+  }
+
+  if (debug_bridge_mode_active != 0U)
+  {
+    (void)uart_bridge_enqueue_pc_data(uart1_dma_rx_buffer, Size);
+    UART1_DMARxStart();
     return;
   }
 

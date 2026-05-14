@@ -1,5 +1,7 @@
 #include "gnss.h"
 
+#include "uart_bridge.h"
+
 #include <string.h>
 
 extern UART_HandleTypeDef huart2;
@@ -14,6 +16,7 @@ static volatile uint16_t gnss_line_length = 0U;
 static volatile uint16_t gnss_ready_length = 0U;
 static volatile uint8_t gnss_collecting = 0U;
 static volatile uint8_t gnss_sentence_ready = 0U;
+static volatile uint8_t gnss_bridge_mode_active = 0U;
 
 static uint32_t gnss_enter_critical(void)
 {
@@ -49,6 +52,7 @@ HAL_StatusTypeDef gnss_init(void)
   gnss_reset_line_state();
   gnss_sentence_ready = 0U;
   gnss_ready_length = 0U;
+  gnss_bridge_mode_active = 0U;
 
   return gnss_start_receive_it();
 }
@@ -66,6 +70,11 @@ bool gnss_read_line(char *buffer, size_t buffer_size)
   uint32_t primask;
 
   if ((buffer == NULL) || (buffer_size == 0U))
+  {
+    return false;
+  }
+
+  if (gnss_bridge_mode_active != 0U)
   {
     return false;
   }
@@ -93,6 +102,17 @@ bool gnss_read_line(char *buffer, size_t buffer_size)
   return true;
 }
 
+void gnss_set_bridge_mode(uint8_t active)
+{
+  gnss_bridge_mode_active = active;
+  gnss_reset_line_state();
+  gnss_sentence_ready = 0U;
+  gnss_ready_length = 0U;
+
+  (void)HAL_UART_AbortReceive(&huart2);
+  (void)gnss_start_receive_it();
+}
+
 void gnss_handle_uart_error(UART_HandleTypeDef *huart)
 {
   if ((huart == NULL) || (huart->Instance != USART2))
@@ -101,6 +121,7 @@ void gnss_handle_uart_error(UART_HandleTypeDef *huart)
   }
 
   gnss_reset_line_state();
+  gnss_sentence_ready = 0U;
   (void)HAL_UART_AbortReceive(huart);
   (void)gnss_start_receive_it();
 }
@@ -111,6 +132,13 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 
   if ((huart == NULL) || (huart->Instance != USART2))
   {
+    return;
+  }
+
+  if (gnss_bridge_mode_active != 0U)
+  {
+    (void)uart_bridge_enqueue_gnss_byte(gnss_rx_byte);
+    (void)gnss_start_receive_it();
     return;
   }
 

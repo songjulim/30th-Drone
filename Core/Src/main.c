@@ -29,6 +29,7 @@
 #include "sensor.h"
 #include "stm32h7xx_hal_gpio.h"
 #include "switch.h"
+#include "uart_bridge.h"
 
 /* USER CODE END Includes */
 
@@ -80,6 +81,7 @@ DMA_HandleTypeDef hdma_usart6_tx;
 
 uint32_t user_step_throttle_compare = 1000U;
 static char gnss_sentence[128];
+static uint8_t user_gnss_bridge_mode = 0U;
 
 /* USER CODE END PV */
 
@@ -180,16 +182,11 @@ int main(void)
   MX_USART6_UART_Init();
   /* USER CODE BEGIN 2 */
 
-  uart1_printf("\r\n\r\n");
-  uart1_printf(" ======== ★☆ Drone Firmware ★☆ ========\r\n");
-  uart1_printf("=====  BackStudyMaster Lim Song ju  ======\r\n");
-  uart1_printf("================ STM32H753 ===============\r\n");
-
   switch_init();
   OLED_Init();
   OLED_Clear();
   OLED_Printf(2, 0, "System Start!");
-  OLED_Printf(4, 0, "Press Up!!");
+  OLED_Printf(4, 0, "UP:Start RT:GNSS");
   OLED_Update();
   while (1) {
     switch_update();
@@ -199,8 +196,50 @@ int main(void)
       OLED_Update();
       break;
     }
+
+    if (sw_r_flag == 1U) {
+      user_gnss_bridge_mode = 1U;
+      OLED_Clear();
+      OLED_Printf(3, 0, "GNSS Bridge");
+      OLED_Printf(5, 0, "Starting...");
+      OLED_Update();
+      break;
+    }
   }
   HAL_Delay(2000);
+
+  if (user_gnss_bridge_mode != 0U) {
+    switch_init();
+    debug_init();
+    uart_bridge_init();
+
+    if (gnss_init() != HAL_OK) {
+      OLED_Clear();
+      OLED_Printf(3, 0, "GNSS INIT ERR");
+      OLED_Update();
+      Error_Handler();
+    }
+
+    uart_bridge_set_active(true);
+    debug_set_bridge_mode(1U);
+    gnss_set_bridge_mode(1U);
+
+    OLED_Clear();
+    OLED_Printf(2, 0, "GNSS Bridge On");
+    OLED_Printf(4, 0, "PC: UART1");
+    OLED_Printf(5, 0, "GNSS: UART2");
+    OLED_Update();
+
+    while (1) {
+      uart_bridge_process();
+    }
+  }
+
+  uart1_printf("\r\n\r\n");
+	uart1_printf(" ======== ★☆ Drone Firmware ★☆ ========\r\n");	
+	uart1_printf("=====  BackStudyMaster Lim Song ju  ======\r\n");
+	uart1_printf("================ STM32H753 ===============\r\n");
+
   while (sensor_init() != HAL_OK) {
     //(void)uart1_printf("sensor init retry\r\n");
     HAL_Delay(100U);
@@ -213,6 +252,7 @@ int main(void)
   switch_init();
   //(void)uart1_printf("switch init ok\r\n");
   debug_init();
+  uart_bridge_init();
   (void)bno085_communication_test();
   if (gnss_init() == HAL_OK) {
     (void)uart1_printf("gnss init ok\r\n");
@@ -238,7 +278,8 @@ int main(void)
     /* USER CODE BEGIN 3 */
     sensor_process();
     switch_update();
-    //debug_process();
+    debug_process();
+    uart_bridge_process();
     if (gnss_read_line(gnss_sentence, sizeof(gnss_sentence))) {
       (void)uart1_printf("%s\r\n", gnss_sentence);
     }
