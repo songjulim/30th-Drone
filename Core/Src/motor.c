@@ -14,6 +14,14 @@ static TIM_HandleTypeDef *motor_tim = NULL;
 volatile float motor_target_roll_rate_dps = 0.0f;
 volatile float motor_target_pitch_rate_dps = 0.0f;
 volatile float motor_target_yaw_rate_dps = 0.0f;
+volatile float motor_target_roll_angle_deg = 0.0f;
+volatile float motor_target_pitch_angle_deg = 0.0f;
+
+typedef struct
+{
+  float kp;
+  float kd;
+} motor_angle_pd_axis_t;
 
 typedef struct
 {
@@ -25,26 +33,38 @@ typedef struct
 
 static motor_rate_pid_axis_t roll_rate_pid =
 {
-  .kp = 0.00f,      //3.00f
-  .kd = 0.00f,     //0.008f
+  .kp = 1.20f,      //3.00f
+  .kd = 0.0030f,     //0.008f
   .previous_measurement_dps = 0.0f,
   .initialized = 0U
 };
 
 static motor_rate_pid_axis_t pitch_rate_pid =
 {
-  .kp = 0.00f,      //4.00f
-  .kd = 0.00f,     //0.005f
+  .kp = 1.40f,      //4.00f
+  .kd = 0.0030f,     //0.005f
   .previous_measurement_dps = 0.0f,
   .initialized = 0U
 };
 
 static motor_rate_pid_axis_t yaw_rate_pid =
 {
-  .kp = 0.00f,
-  .kd = 0.00f,
+  .kp = 0.60f,
+  .kd = 0.0005f,
   .previous_measurement_dps = 0.0f,
   .initialized = 0U
+};
+
+static motor_angle_pd_axis_t roll_angle_pd =
+{
+  .kp = 1.50f,
+  .kd = 0.02f
+};
+
+static motor_angle_pd_axis_t pitch_angle_pd =
+{
+  .kp = 1.50f,
+  .kd = 0.02f
 };
 
 static uint32_t motor_throttle_compare = MOTOR_OUTPUT_MIN_COMPARE;
@@ -108,7 +128,25 @@ static float motor_rate_pid_step(motor_rate_pid_axis_t *pid,
 
   return motor_clamp_float(output,
                            -MOTOR_RATE_PID_OUTPUT_LIMIT,
-                           MOTOR_RATE_PID_OUTPUT_LIMIT);
+                            MOTOR_RATE_PID_OUTPUT_LIMIT);
+}
+
+static float motor_angle_pd_step(const motor_angle_pd_axis_t *pd,
+                                 float target_angle_deg,
+                                 float measured_angle_deg,
+                                 float measured_rate_dps)
+{
+  float error_deg;
+
+  if (pd == NULL)
+  {
+    return 0.0f;
+  }
+
+  error_deg = target_angle_deg - measured_angle_deg;
+
+  return (pd->kp * error_deg) -
+         (pd->kd * measured_rate_dps);
 }
 
 static void motor_set_compare(uint32_t channel, uint32_t compare)
@@ -192,6 +230,23 @@ void motor_set_rate_targets(float roll_rate_dps, float pitch_rate_dps, float yaw
   motor_target_yaw_rate_dps = yaw_rate_dps;
 }
 
+void motor_set_angle_targets(float roll_deg, float pitch_deg)
+{
+  motor_target_roll_angle_deg = roll_deg;
+  motor_target_pitch_angle_deg = pitch_deg;
+}
+
+void motor_set_angle_pd_gains(float roll_kp,
+                              float roll_kd,
+                              float pitch_kp,
+                              float pitch_kd)
+{
+  roll_angle_pd.kp = roll_kp;
+  roll_angle_pd.kd = roll_kd;
+  pitch_angle_pd.kp = pitch_kp;
+  pitch_angle_pd.kd = pitch_kd;
+}
+
 void motor_set_rate_pid_gains(float roll_kp,
                               float roll_kd,
                               float pitch_kp,
@@ -221,6 +276,8 @@ void motor_reset_rate_pid(void)
   motor_target_roll_rate_dps = 0.0f;
   motor_target_pitch_rate_dps = 0.0f;
   motor_target_yaw_rate_dps = 0.0f;
+  motor_target_roll_angle_deg = 0.0f;
+  motor_target_pitch_angle_deg = 0.0f;
 }
 
 void motor_rate_pid_update(void)
@@ -228,15 +285,28 @@ void motor_rate_pid_update(void)
   float roll_output;
   float pitch_output;
   float yaw_output;
+  float effective_roll_rate_dps;
+  float effective_pitch_rate_dps;
   float base_compare;
 
   base_compare = (float)motor_throttle_compare;
 
+  effective_roll_rate_dps = motor_target_roll_rate_dps +
+                            motor_angle_pd_step(&roll_angle_pd,
+                                                motor_target_roll_angle_deg,
+                                                sensor_roll_deg,
+                                                sensor_gyro_x_dps);
+  effective_pitch_rate_dps = motor_target_pitch_rate_dps +
+                             motor_angle_pd_step(&pitch_angle_pd,
+                                                 motor_target_pitch_angle_deg,
+                                                 sensor_pitch_deg,
+                                                 sensor_gyro_y_dps);
+
   roll_output = motor_rate_pid_step(&roll_rate_pid,
-                                    motor_target_roll_rate_dps,
+                                    effective_roll_rate_dps,
                                     sensor_gyro_x_dps);
   pitch_output = motor_rate_pid_step(&pitch_rate_pid,
-                                     motor_target_pitch_rate_dps,
+                                     effective_pitch_rate_dps,
                                      sensor_gyro_y_dps);
   yaw_output = motor_rate_pid_step(&yaw_rate_pid,
                                    motor_target_yaw_rate_dps,

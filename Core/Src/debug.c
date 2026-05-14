@@ -244,11 +244,6 @@ static int DebugSignScaledTenths(float value)
   return (value < 0.0f) ? -DebugAbs((int)(value * 10.0f)) : DebugAbs((int)(value * 10.0f));
 }
 
-static int DebugSignScaledThousandths(float value)
-{
-  return (value < 0.0f) ? -DebugAbs((int)(value * 1000.0f)) : DebugAbs((int)(value * 1000.0f));
-}
-
 static int DebugIntegerPartFromScaled(int scaled_value, int scale)
 {
   if ((scaled_value < 0) && (DebugAbs(scaled_value) < scale))
