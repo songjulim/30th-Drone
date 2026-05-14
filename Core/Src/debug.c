@@ -9,6 +9,7 @@
 #include <string.h>
 
 extern UART_HandleTypeDef huart1;
+extern UART_HandleTypeDef huart6;
 extern TIM_HandleTypeDef htim3;
 extern uint32_t user_step_throttle_compare;
 
@@ -17,6 +18,9 @@ extern uint32_t user_step_throttle_compare;
 #define UART1_DMA_CACHE_LINE_SIZE 32U
 #define UART1_DMA_RX_BUFFER_SIZE  16U
 #define UART1_TRIGGER_HOLD_MS      1000U
+#define UART6_DMA_TX_QUEUE_LENGTH 8U
+#define UART6_DMA_TX_BUFFER_SIZE  16U
+#define UART6_DMA_RX_BUFFER_SIZE  16U
 
 typedef struct
 {
@@ -25,21 +29,41 @@ typedef struct
   uint8_t reserved[30];
 } uart1_dma_tx_entry_t;
 
+typedef struct
+{
+  uint8_t data[UART6_DMA_TX_BUFFER_SIZE];
+  uint16_t length;
+  uint8_t reserved[14];
+} uart6_dma_tx_entry_t;
+
 static uart1_dma_tx_entry_t uart1_dma_tx_queue[UART1_DMA_TX_QUEUE_LENGTH]
+  __attribute__((aligned(UART1_DMA_CACHE_LINE_SIZE), section(".dma_buffer")));
+static uart6_dma_tx_entry_t uart6_dma_tx_queue[UART6_DMA_TX_QUEUE_LENGTH]
   __attribute__((aligned(UART1_DMA_CACHE_LINE_SIZE), section(".dma_buffer")));
 static uint8_t uart1_dma_rx_buffer[UART1_DMA_RX_BUFFER_SIZE]
   __attribute__((aligned(UART1_DMA_CACHE_LINE_SIZE), section(".dma_buffer")));
+static uint8_t uart6_dma_rx_buffer[UART6_DMA_RX_BUFFER_SIZE]
+  __attribute__((aligned(UART1_DMA_CACHE_LINE_SIZE), section(".dma_buffer")));
 static volatile uint8_t uart1_dma_tx_busy = 0U;
+static volatile uint8_t uart6_dma_tx_busy = 0U;
 static volatile uint8_t uart1_dma_tx_head = 0U;
 static volatile uint8_t uart1_dma_tx_tail = 0U;
 static volatile uint8_t uart1_dma_tx_count = 0U;
+static volatile uint8_t uart6_dma_tx_head = 0U;
+static volatile uint8_t uart6_dma_tx_tail = 0U;
+static volatile uint8_t uart6_dma_tx_count = 0U;
 volatile float uart1_rx_float_value = 0.0f;
+volatile float uart6_rx_float_value = 0.0f;
 volatile uint8_t debug_uart_update_flag = 0U;
+volatile uint8_t debug_uart6_update_flag = 0U;
 volatile uint8_t debug_oled_update_flag = 0U;
 volatile uint8_t debug_oled_tick_divider = 0U;
 volatile uint32_t main_flag = 0U;
 static volatile uint8_t uart1_trigger_active = 0U;
 static volatile uint32_t uart1_trigger_start_tick = 0U;
+static volatile uint8_t uart6_start_received = 0U;
+
+static HAL_StatusTypeDef UART6_DMATxEnqueue(const uint8_t *data, uint16_t length);
 
 static void UART1_DMARxStart(void)
 {
@@ -51,12 +75,84 @@ static void UART1_DMARxStart(void)
   }
 }
 
+static void UART6_DMARxStart(void)
+{
+  if (HAL_UARTEx_ReceiveToIdle_DMA(&huart6,
+                                   uart6_dma_rx_buffer,
+                                   UART6_DMA_RX_BUFFER_SIZE) == HAL_OK)
+  {
+    __HAL_DMA_DISABLE_IT(huart6.hdmarx, DMA_IT_HT);
+  }
+}
+
+static void UART6_DMATxRespond(uint16_t length)
+{
+  static const uint8_t started_text[] = {'S', 'T', 'A', 'R', 'T', 'E', 'D'};
+  static const uint8_t retry_text[] = {'R', 'E', 'T', 'R', 'Y'};
+  const uint8_t *tx_data;
+  uint16_t tx_length;
+  char rx_text[UART6_DMA_RX_BUFFER_SIZE];
+  char *parse_end;
+  float rx_value;
+
+  while ((length > 0U) &&
+         ((uart6_dma_rx_buffer[length - 1U] == '\r') || (uart6_dma_rx_buffer[length - 1U] == '\n')))
+  {
+    length--;
+  }
+
+  if (uart6_start_received == 0U)
+  {
+    if ((length == 5U) &&
+        (uart6_dma_rx_buffer[0] == 'S') &&
+        (uart6_dma_rx_buffer[1] == 'T') &&
+        (uart6_dma_rx_buffer[2] == 'A') &&
+        (uart6_dma_rx_buffer[3] == 'R') &&
+        (uart6_dma_rx_buffer[4] == 'T'))
+    {
+      uart6_start_received = 1U;
+      tx_data = started_text;
+      tx_length = 7U;
+    }
+    else
+    {
+      tx_data = retry_text;
+      tx_length = 5U;
+    }
+  }
+  else
+  {
+    if (length >= UART6_DMA_RX_BUFFER_SIZE)
+    {
+      length = UART6_DMA_RX_BUFFER_SIZE - 1U;
+    }
+
+    memcpy(rx_text, uart6_dma_rx_buffer, length);
+    rx_text[length] = '\0';
+    rx_value = strtof(rx_text, &parse_end);
+
+    if ((parse_end == rx_text) || (*parse_end != '\0') || (rx_value < 1000.0f) || (rx_value > 2000.0f))
+    {
+      return;
+    }
+    else
+    {
+      uart6_rx_float_value = rx_value;
+      motor_set_throttle((uint32_t)rx_value);
+      tx_data = uart6_dma_rx_buffer;
+      tx_length = length;
+    }
+  }
+
+  (void)UART6_DMATxEnqueue(tx_data, tx_length);
+}
+
 static void UART1_DMARxStoreFloat(uint16_t length)
 {
   char rx_text[UART1_DMA_RX_BUFFER_SIZE];
   char *parse_end;
   long trigger_index;
-  float target_yaw_rate_dps;
+  float target_roll_rate_dps;
 
   if ((length == 0U) || (length >= UART1_DMA_RX_BUFFER_SIZE))
   {
@@ -102,29 +198,29 @@ static void UART1_DMARxStoreFloat(uint16_t length)
     return;
   }
 
-  target_yaw_rate_dps = 0.0f;
+  target_roll_rate_dps = 0.0f;
 
   if (trigger_index == 1)
   {
-    target_yaw_rate_dps = 5.0f;
+    target_roll_rate_dps = 5.0f;
   }
   else if (trigger_index == 2)
   {
-    target_yaw_rate_dps = 10.0f;
+    target_roll_rate_dps = 10.0f;
   }
   else if (trigger_index == 3)
   {
-    target_yaw_rate_dps = 15.0f;
+    target_roll_rate_dps = 15.0f;
   }
   else if (trigger_index != 0)
   {
     return;
   }
 
-  uart1_rx_float_value = target_yaw_rate_dps;
-  motor_set_rate_targets(0.0f, 0.0f, target_yaw_rate_dps);
+  uart1_rx_float_value = target_roll_rate_dps;
+  motor_set_rate_targets(target_roll_rate_dps, 0.0f, 0.0f);
 
-  if (target_yaw_rate_dps > 0.0f)
+  if (target_roll_rate_dps > 0.0f)
   {
     uart1_trigger_active = 1U;
     uart1_trigger_start_tick = HAL_GetTick();
@@ -250,12 +346,94 @@ static HAL_StatusTypeDef UART1_DMATxEnqueue(const uint8_t *data, uint16_t length
   return HAL_OK;
 }
 
+static void UART6_DMATxStartNext(void)
+{
+  uint32_t primask;
+  uint8_t queue_tail;
+  HAL_StatusTypeDef status;
+
+  primask = UART1_DMATxEnterCritical();
+
+  if ((uart6_dma_tx_busy != 0U) || (uart6_dma_tx_count == 0U))
+  {
+    UART1_DMATxExitCritical(primask);
+    return;
+  }
+
+  queue_tail = uart6_dma_tx_tail;
+  uart6_dma_tx_busy = 1U;
+  UART1_DMATxExitCritical(primask);
+
+  status = HAL_UART_Transmit_DMA(&huart6,
+                                 uart6_dma_tx_queue[queue_tail].data,
+                                 uart6_dma_tx_queue[queue_tail].length);
+
+  if (status != HAL_OK)
+  {
+    HAL_UART_Abort(&huart6);
+
+    primask = UART1_DMATxEnterCritical();
+    uart6_dma_tx_busy = 0U;
+    UART1_DMATxExitCritical(primask);
+  }
+}
+
+static HAL_StatusTypeDef UART6_DMATxEnqueue(const uint8_t *data, uint16_t length)
+{
+  uint32_t primask;
+  uint8_t queue_head;
+
+  if ((data == NULL) || (length == 0U) || (length > UART6_DMA_TX_BUFFER_SIZE))
+  {
+    return HAL_ERROR;
+  }
+
+  primask = UART1_DMATxEnterCritical();
+
+  if (uart6_dma_tx_count >= UART6_DMA_TX_QUEUE_LENGTH)
+  {
+    UART1_DMATxExitCritical(primask);
+    return HAL_BUSY;
+  }
+
+  queue_head = uart6_dma_tx_head;
+  memcpy(uart6_dma_tx_queue[queue_head].data, data, length);
+  uart6_dma_tx_queue[queue_head].length = length;
+  uart6_dma_tx_head = (uint8_t)((queue_head + 1U) % UART6_DMA_TX_QUEUE_LENGTH);
+  uart6_dma_tx_count++;
+
+  UART1_DMATxExitCritical(primask);
+
+  UART6_DMATxStartNext();
+
+  return HAL_OK;
+}
+
+static void Debug_SendUart6Telemetry(void)
+{
+  char tx_buffer[UART6_DMA_TX_BUFFER_SIZE];
+  int roll_rate = (int)(sensor_gyro_x_dps * 100.0f);
+  int length;
+
+  length = snprintf(tx_buffer, sizeof(tx_buffer), "%c%d.%02d\r\n",
+                    (roll_rate < 0) ? '-' : ' ', DebugAbs(roll_rate) / 100, DebugAbs(roll_rate) % 100);
+
+  if (length > 0)
+  {
+    if (length >= (int)sizeof(tx_buffer))
+    {
+      length = (int)sizeof(tx_buffer) - 1;
+    }
+    (void)UART6_DMATxEnqueue((uint8_t *)tx_buffer, (uint16_t)length);
+  }
+}
+
 static void Debug_SendUartSnapshot(void)
 {
-  int gz = (int)(sensor_gyro_z_dps * 100.0f);
+  int roll_rate = (int)(sensor_gyro_x_dps * 100.0f);
 
   (void)uart1_printf("%c%d.%02d\r\n",
-                     (gz < 0) ? '-' : ' ', DebugAbs(gz) / 100, DebugAbs(gz) % 100);
+                     (roll_rate < 0) ? '-' : ' ', DebugAbs(roll_rate) / 100, DebugAbs(roll_rate) % 100);
 }
 
 static void Debug_UpdateOledSnapshot(void)
@@ -288,13 +466,21 @@ static void Debug_UpdateOledSnapshot(void)
 void debug_init(void)
 {
   debug_uart_update_flag = 0U;
+  debug_uart6_update_flag = 0U;
   debug_oled_update_flag = 0U;
   debug_oled_tick_divider = 0U;
   main_flag = 0U;
   uart1_rx_float_value = 0.0f;
   uart1_trigger_active = 0U;
   uart1_trigger_start_tick = 0U;
+  uart6_rx_float_value = 0.0f;
+  uart6_start_received = 0U;
+  uart6_dma_tx_busy = 0U;
+  uart6_dma_tx_head = 0U;
+  uart6_dma_tx_tail = 0U;
+  uart6_dma_tx_count = 0U;
   UART1_DMARxStart();
+  UART6_DMARxStart();
 }
 
 void debug_process(void)
@@ -321,6 +507,12 @@ void debug_process(void)
     // OLED_Printf(3, 0, "MOTOR = %d", user_step_throttle_compare);
     // OLED_Update();
     Debug_UpdateOledSnapshot();
+  }
+
+  if (debug_uart6_update_flag != 0U)
+  {
+    debug_uart6_update_flag = 0U;
+    Debug_SendUart6Telemetry();
   }
 }
 
@@ -361,7 +553,29 @@ void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
 {
   uint32_t primask;
 
-  if ((huart == NULL) || (huart->Instance != USART1))
+  if (huart == NULL)
+  {
+    return;
+  }
+
+  if (huart->Instance == USART6)
+  {
+    primask = UART1_DMATxEnterCritical();
+
+    if (uart6_dma_tx_count > 0U)
+    {
+      uart6_dma_tx_tail = (uint8_t)((uart6_dma_tx_tail + 1U) % UART6_DMA_TX_QUEUE_LENGTH);
+      uart6_dma_tx_count--;
+    }
+
+    uart6_dma_tx_busy = 0U;
+    UART1_DMATxExitCritical(primask);
+
+    UART6_DMATxStartNext();
+    return;
+  }
+
+  if (huart->Instance != USART1)
   {
     return;
   }
@@ -384,7 +598,23 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
 {
   uint32_t primask;
 
-  if ((huart == NULL) || (huart->Instance != USART1))
+  if (huart == NULL)
+  {
+    return;
+  }
+
+  if (huart->Instance == USART6)
+  {
+    primask = UART1_DMATxEnterCritical();
+    uart6_dma_tx_busy = 0U;
+    UART1_DMATxExitCritical(primask);
+
+    (void)HAL_UART_AbortTransmit(huart);
+    UART6_DMARxStart();
+    return;
+  }
+
+  if (huart->Instance != USART1)
   {
     return;
   }
@@ -401,7 +631,19 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
 
 void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
 {
-  if ((huart == NULL) || (huart->Instance != USART1))
+  if (huart == NULL)
+  {
+    return;
+  }
+
+  if (huart->Instance == USART6)
+  {
+    UART6_DMATxRespond(Size);
+    UART6_DMARxStart();
+    return;
+  }
+
+  if (huart->Instance != USART1)
   {
     return;
   }
