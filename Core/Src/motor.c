@@ -33,38 +33,38 @@ typedef struct
 
 static motor_rate_pid_axis_t roll_rate_pid =
 {
-  .kp = 0.00f,      //3.00f
-  .kd = 0.00f,     //0.008f
+  .kp = 1.20f,      //3.00f
+  .kd = 0.0030f,     //0.008f
   .previous_measurement_dps = 0.0f,
   .initialized = 0U
 };
 
 static motor_rate_pid_axis_t pitch_rate_pid =
 {
-  .kp = 0.00f,      //4.00f
-  .kd = 0.00f,     //0.005f
+  .kp = 1.40f,      //4.00f
+  .kd = 0.0030f,     //0.005f
   .previous_measurement_dps = 0.0f,
   .initialized = 0U
 };
 
 static motor_rate_pid_axis_t yaw_rate_pid =
 {
-  .kp = 0.00f,
-  .kd = 0.00f,
+  .kp = 0.60f,
+  .kd = 0.0005f,
   .previous_measurement_dps = 0.0f,
   .initialized = 0U
 };
 
 static motor_angle_pd_axis_t roll_angle_pd =
 {
-  .kp = 0.00f,
-  .kd = 0.00f
+  .kp = 1.50f,
+  .kd = 0.02f
 };
 
 static motor_angle_pd_axis_t pitch_angle_pd =
 {
-  .kp = 0.00f,
-  .kd = 0.00f
+  .kp = 1.50f,
+  .kd = 0.02f
 };
 
 static uint32_t motor_throttle_compare = MOTOR_OUTPUT_MIN_COMPARE;
