@@ -182,6 +182,11 @@ int main(void)
   MX_USART6_UART_Init();
   /* USER CODE BEGIN 2 */
 
+  uart1_printf("\r\n\r\n");
+	uart1_printf(" ======== ★☆ Drone Firmware ★☆ ========\r\n");	
+	uart1_printf("=====  BackStudyMaster Lim Song ju  ======\r\n");
+	uart1_printf("================ STM32H753 ===============\r\n");
+
   switch_init();
   OLED_Init();
   OLED_Clear();
@@ -234,11 +239,6 @@ int main(void)
       uart_bridge_process();
     }
   }
-
-  uart1_printf("\r\n\r\n");
-	uart1_printf(" ======== ★☆ Drone Firmware ★☆ ========\r\n");	
-	uart1_printf("=====  BackStudyMaster Lim Song ju  ======\r\n");
-	uart1_printf("================ STM32H753 ===============\r\n");
 
   while (sensor_init() != HAL_OK) {
     //(void)uart1_printf("sensor init retry\r\n");
