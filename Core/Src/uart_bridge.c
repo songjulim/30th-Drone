@@ -185,7 +185,7 @@ void uart_bridge_process(void)
   chunk_length = uart_bridge_copy_pc_chunk(pc_to_gnss_chunk, UART_BRIDGE_PC_TO_GNSS_CHUNK_SIZE);
   if (chunk_length > 0U)
   {
-    if (HAL_UART_Transmit(&huart2, pc_to_gnss_chunk, chunk_length, 10U) != HAL_OK)
+    if (HAL_UART_Transmit(&huart2, pc_to_gnss_chunk, chunk_length, 50U) != HAL_OK)
     {
       (void)uart_bridge_enqueue_pc_data(pc_to_gnss_chunk, chunk_length);
     }
