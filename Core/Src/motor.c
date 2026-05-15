@@ -306,17 +306,21 @@ void motor_rate_pid_update(void)
                                     effective_roll_rate_dps,
                                     sensor_gyro_x_dps);
   pitch_output = motor_rate_pid_step(&pitch_rate_pid,
+    
                                      effective_pitch_rate_dps,
                                      sensor_gyro_y_dps);
   yaw_output = motor_rate_pid_step(&yaw_rate_pid,
                                    motor_target_yaw_rate_dps,
                                    sensor_gyro_z_dps);
 
-  motor_set_channels(motor_clamp_compare(base_compare + pitch_output - roll_output + yaw_output),
-                     motor_clamp_compare(base_compare + pitch_output + roll_output - yaw_output),
-                     motor_clamp_compare(base_compare - pitch_output + roll_output + yaw_output),
-                     motor_clamp_compare(base_compare - pitch_output - roll_output - yaw_output));
+  motor_set_channels(motor_clamp_compare(base_compare - pitch_output + roll_output + yaw_output),
+                     motor_clamp_compare(base_compare - pitch_output - roll_output - yaw_output),
+                     motor_clamp_compare(base_compare + pitch_output - roll_output + yaw_output),
+                     motor_clamp_compare(base_compare + pitch_output + roll_output - yaw_output));
 }
+
+
+
 
 void motor_stop(void)
 {
