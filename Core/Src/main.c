@@ -29,6 +29,7 @@
 #include "sensor.h"
 #include "stm32h7xx_hal_gpio.h"
 #include "switch.h"
+#include "uart_bridge.h"
 
 /* USER CODE END Includes */
 
@@ -78,8 +79,20 @@ DMA_HandleTypeDef hdma_usart6_tx;
 
 /* USER CODE BEGIN PV */
 
+#define BATTERY_FILTER_SIZE 20
+
+uint16_t adc_buffer[BATTERY_FILTER_SIZE];
+uint8_t adc_index = 0;
+uint8_t filter_filled = 0;
+
+float battery_voltage = 0.0f;
+int8_t battery_percent = 0;
+uint32_t last_battery_check_time = 0;
+
 uint32_t user_step_throttle_compare = 1000U;
 static char gnss_sentence[128];
+static gnss_pvt_t gnss_pvt;
+static uint8_t user_gnss_bridge_mode = 0U;
 
 /* USER CODE END PV */
 
@@ -108,6 +121,46 @@ static void MX_USART6_UART_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+
+void Battery_Process(void) {
+  if (HAL_GetTick() - last_battery_check_time >= 50) {
+    last_battery_check_time = HAL_GetTick();
+
+    HAL_ADC_Start(&hadc1);
+    if (HAL_ADC_PollForConversion(&hadc1, 10) == HAL_OK) {
+      uint32_t raw_adc = HAL_ADC_GetValue(&hadc1);
+      
+      adc_buffer[adc_index] = raw_adc;
+      adc_index++;
+      if (adc_index >= BATTERY_FILTER_SIZE) {
+        adc_index = 0;
+        filter_filled = 1;
+      }
+
+      if (filter_filled || adc_index > 5) {
+        uint32_t sum = 0;
+        uint8_t count = filter_filled ? BATTERY_FILTER_SIZE : adc_index;
+        
+        for (int i = 0; i < count; i++) {
+          sum += adc_buffer[i];
+        }
+        
+        float avg_adc = (float)sum / count;
+        
+        // 실제 전압(16.0V, 13.8V) 대비 측정값이 항상 0.2V 높게 나오는 현상(16.2V, 14.0V) 오프셋 보정
+        float raw_voltage = (avg_adc / 65535.0f) * 3.3f * 5.7f;
+        battery_voltage = raw_voltage - 0.2f;
+        
+        float percent = (battery_voltage - 13.2f) / (16.8f - 13.2f) * 100.0f;
+        if (percent > 100.0f) percent = 100.0f;
+        if (percent < 0.0f) percent = 0.0f;
+        
+        battery_percent = (int8_t)percent;
+      }
+    }
+    HAL_ADC_Stop(&hadc1);
+  }
+}
 
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
   if (htim == NULL) {
@@ -181,15 +234,15 @@ int main(void)
   /* USER CODE BEGIN 2 */
 
   uart1_printf("\r\n\r\n");
-  uart1_printf(" ======== ★☆ Drone Firmware ★☆ ========\r\n");
-  uart1_printf("=====  BackStudyMaster Lim Song ju  ======\r\n");
-  uart1_printf("================ STM32H753 ===============\r\n");
+	uart1_printf(" ======== ★☆ Drone Firmware ★☆ ========\r\n");	
+	uart1_printf("=====  BackStudyMaster Lim Song ju  ======\r\n");
+	uart1_printf("================ STM32H753 ===============\r\n");
 
   switch_init();
   OLED_Init();
   OLED_Clear();
   OLED_Printf(2, 0, "System Start!");
-  OLED_Printf(4, 0, "Press Up!!");
+  OLED_Printf(4, 0, "UP:Start RT:GNSS");
   OLED_Update();
   while (1) {
     switch_update();
@@ -199,8 +252,45 @@ int main(void)
       OLED_Update();
       break;
     }
+
+    if (sw_r_flag == 1U) {
+      user_gnss_bridge_mode = 1U;
+      OLED_Clear();
+      OLED_Printf(3, 0, "GNSS Bridge");
+      OLED_Printf(5, 0, "Starting...");
+      OLED_Update();
+      break;
+    }
   }
   HAL_Delay(2000);
+
+  if (user_gnss_bridge_mode != 0U) {
+    switch_init();
+    debug_init();
+    uart_bridge_init();
+
+    if (gnss_init() != HAL_OK) {
+      OLED_Clear();
+      OLED_Printf(3, 0, "GNSS INIT ERR");
+      OLED_Update();
+      Error_Handler();
+    }
+
+    uart_bridge_set_active(true);
+    debug_set_bridge_mode(1U);
+    gnss_set_bridge_mode(1U);
+
+    OLED_Clear();
+    OLED_Printf(2, 0, "GNSS Bridge On");
+    OLED_Printf(4, 0, "PC: UART1");
+    OLED_Printf(5, 0, "GNSS: UART2");
+    OLED_Update();
+
+    while (1) {
+      uart_bridge_process();
+    }
+  }
+
   while (sensor_init() != HAL_OK) {
     //(void)uart1_printf("sensor init retry\r\n");
     HAL_Delay(100U);
@@ -213,6 +303,7 @@ int main(void)
   switch_init();
   //(void)uart1_printf("switch init ok\r\n");
   debug_init();
+  uart_bridge_init();
   (void)bno085_communication_test();
   if (gnss_init() == HAL_OK) {
     (void)uart1_printf("gnss init ok\r\n");
@@ -236,9 +327,23 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+    Battery_Process();
     sensor_process();
+    (void)bno085_process();
     switch_update();
-    //debug_process();
+    debug_process();
+    uart_bridge_process();
+    if (gnss_read_pvt(&gnss_pvt)) {
+      (void)uart1_printf("GNSS fix:%u sv:%u lat:%ld lon:%ld hMSL:%ld hAcc:%lu vAcc:%lu gSpd:%ld\r\n",
+                         gnss_pvt.fix_type,
+                         gnss_pvt.satellites_used,
+                         gnss_pvt.latitude_deg_1e7,
+                         gnss_pvt.longitude_deg_1e7,
+                         gnss_pvt.height_msl_mm,
+                         gnss_pvt.horizontal_accuracy_mm,
+                         gnss_pvt.vertical_accuracy_mm,
+                         gnss_pvt.ground_speed_mm_s);
+    }
     if (gnss_read_line(gnss_sentence, sizeof(gnss_sentence))) {
       (void)uart1_printf("%s\r\n", gnss_sentence);
     }
@@ -256,6 +361,7 @@ int main(void)
         if (main_flag != 0U) {
           main_flag--;
           sensor_process();
+          (void)bno085_process();
           motor_rate_pid_update();
         }
 
@@ -982,7 +1088,7 @@ static void MX_USART2_UART_Init(void)
 
   /* USER CODE END USART2_Init 1 */
   huart2.Instance = USART2;
-  huart2.Init.BaudRate = 115200;
+  huart2.Init.BaudRate = 9600;
   huart2.Init.WordLength = UART_WORDLENGTH_8B;
   huart2.Init.StopBits = UART_STOPBITS_1;
   huart2.Init.Parity = UART_PARITY_NONE;

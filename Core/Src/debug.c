@@ -4,6 +4,7 @@
 #include "oled.h"
 #include "main.h"
 #include "sensor.h"
+#include "uart_bridge.h"
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -13,6 +14,8 @@ extern UART_HandleTypeDef huart1;
 extern UART_HandleTypeDef huart6;
 extern TIM_HandleTypeDef htim3;
 extern uint32_t user_step_throttle_compare;
+extern float battery_voltage;
+extern int8_t battery_percent;
 
 #define UART1_DMA_TX_QUEUE_LENGTH 8U
 #define UART1_DMA_TX_BUFFER_SIZE  160U
@@ -63,6 +66,7 @@ volatile uint32_t main_flag = 0U;
 static volatile uint8_t uart1_trigger_active = 0U;
 static volatile uint32_t uart1_trigger_start_tick = 0U;
 static volatile uint8_t uart6_start_received = 0U;
+static volatile uint8_t debug_bridge_mode_active = 0U;
 
 static HAL_StatusTypeDef UART6_DMATxEnqueue(const uint8_t *data, uint16_t length);
 
@@ -455,10 +459,15 @@ static void Debug_UpdateOledSnapshot(void)
   char pitch_sign = (pitch_tenths < 0) ? '-' : ' ';
   char yaw_sign = (yaw_tenths < 0) ? '-' : ' ';
 
+  float display_voltage = battery_voltage + 0.05f; // 소수점 첫째자리 반올림
+  uint8_t v_int = (uint8_t)display_voltage;
+  uint8_t v_dec = (uint8_t)((display_voltage - v_int) * 10.0f);
+
   OLED_Clear();
   OLED_Printf(0, 0, "GX %c%d.%01d", gx_sign, DebugIntegerPartFromScaled(gx_tenths, 10), DebugAbs(gx_tenths) % 10);
   OLED_Printf(1, 0, "GY %c%d.%01d", gy_sign, DebugIntegerPartFromScaled(gy_tenths, 10), DebugAbs(gy_tenths) % 10);
   OLED_Printf(2, 0, "GZ %c%d.%01d", gz_sign, DebugIntegerPartFromScaled(gz_tenths, 10), DebugAbs(gz_tenths) % 10);
+  OLED_Printf(3, 0, "BAT %d.%dV %d%%", v_int, v_dec, battery_percent);
   OLED_Printf(4, 0, "                ");
   OLED_Printf(5, 0, "                ");
   OLED_Printf(6, 0, "R %c%d.%01d P %c%d.%01d", roll_sign, DebugIntegerPartFromScaled(roll_tenths, 10), DebugAbs(roll_tenths) % 10,
@@ -479,12 +488,34 @@ void debug_init(void)
   uart1_trigger_start_tick = 0U;
   uart6_rx_float_value = 0.0f;
   uart6_start_received = 0U;
+  debug_bridge_mode_active = 0U;
+  uart1_dma_tx_busy = 0U;
+  uart1_dma_tx_head = 0U;
+  uart1_dma_tx_tail = 0U;
+  uart1_dma_tx_count = 0U;
   uart6_dma_tx_busy = 0U;
   uart6_dma_tx_head = 0U;
   uart6_dma_tx_tail = 0U;
   uart6_dma_tx_count = 0U;
   UART1_DMARxStart();
   UART6_DMARxStart();
+}
+
+void debug_set_bridge_mode(uint8_t active)
+{
+  uint32_t primask = UART1_DMATxEnterCritical();
+
+  debug_bridge_mode_active = active;
+  uart1_dma_tx_busy = 0U;
+  uart1_dma_tx_head = 0U;
+  uart1_dma_tx_tail = 0U;
+  uart1_dma_tx_count = 0U;
+
+  UART1_DMATxExitCritical(primask);
+
+  (void)HAL_UART_AbortTransmit(&huart1);
+  (void)HAL_UART_AbortReceive(&huart1);
+  UART1_DMARxStart();
 }
 
 void debug_process(void)
@@ -501,7 +532,10 @@ void debug_process(void)
   if (debug_uart_update_flag != 0U)
   {
     debug_uart_update_flag = 0U;
-    Debug_SendUartSnapshot();
+    if (debug_bridge_mode_active == 0U)
+    {
+      Debug_SendUartSnapshot();
+    }
   }
 
   if (debug_oled_update_flag != 0U)
@@ -531,6 +565,11 @@ int uart1_printf(const char *format, ...)
     return -1;
   }
 
+  if (debug_bridge_mode_active != 0U)
+  {
+    return 0;
+  }
+
   va_start(args, format);
   length = vsnprintf((char *)tx_buffer, sizeof(tx_buffer), format, args);
   va_end(args);
@@ -551,6 +590,16 @@ int uart1_printf(const char *format, ...)
   }
 
   return length;
+}
+
+HAL_StatusTypeDef debug_uart1_write_raw(const uint8_t *data, uint16_t length)
+{
+  if (debug_bridge_mode_active == 0U)
+  {
+    return HAL_BUSY;
+  }
+
+  return UART1_DMATxEnqueue(data, length);
 }
 
 void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
@@ -655,6 +704,13 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
 
   if (huart->Instance != USART1)
   {
+    return;
+  }
+
+  if (debug_bridge_mode_active != 0U)
+  {
+    (void)uart_bridge_enqueue_pc_data(uart1_dma_rx_buffer, Size);
+    UART1_DMARxStart();
     return;
   }
 
