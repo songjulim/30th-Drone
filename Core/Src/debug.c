@@ -21,7 +21,7 @@ extern uint32_t user_step_throttle_compare;
 #define UART1_DMA_RX_BUFFER_SIZE  16U
 #define UART1_TRIGGER_HOLD_MS      1000U
 #define UART6_DMA_TX_QUEUE_LENGTH 8U
-#define UART6_DMA_TX_BUFFER_SIZE  16U
+#define UART6_DMA_TX_BUFFER_SIZE  80U
 #define UART6_DMA_RX_BUFFER_SIZE  16U
 
 typedef struct
@@ -411,10 +411,18 @@ static void Debug_SendUart6Telemetry(void)
 {
   char tx_buffer[UART6_DMA_TX_BUFFER_SIZE];
   int roll_rate = (int)(sensor_gyro_x_dps * 100.0f);
+  int pitch_rate = (int)(sensor_gyro_y_dps * 100.0f);
+  int yaw_rate = (int)(sensor_gyro_z_dps * 100.0f);
+  int roll_angle = (int)(sensor_roll_deg * 100.0f);
+  int pitch_angle = (int)(sensor_pitch_deg * 100.0f);
   int length;
 
-  length = snprintf(tx_buffer, sizeof(tx_buffer), "%c%d.%02d\r\n",
-                    (roll_rate < 0) ? '-' : ' ', DebugAbs(roll_rate) / 100, DebugAbs(roll_rate) % 100);
+  length = snprintf(tx_buffer, sizeof(tx_buffer), "%c%d.%02d, %c%d.%02d, %c%d.%02d, %c%d.%02d, %c%d.%02d\r\n",
+                    (roll_rate < 0) ? '-' : ' ', DebugAbs(roll_rate) / 100, DebugAbs(roll_rate) % 100,
+                    (pitch_rate < 0) ? '-' : ' ', DebugAbs(pitch_rate) / 100, DebugAbs(pitch_rate) % 100,
+                    (yaw_rate < 0) ? '-' : ' ', DebugAbs(yaw_rate) / 100, DebugAbs(yaw_rate) % 100,
+                    (roll_angle < 0) ? '-' : ' ', DebugAbs(roll_angle) / 100, DebugAbs(roll_angle) % 100,
+                    (pitch_angle < 0) ? '-' : ' ', DebugAbs(pitch_angle) / 100, DebugAbs(pitch_angle) % 100);
 
   if (length > 0)
   {
