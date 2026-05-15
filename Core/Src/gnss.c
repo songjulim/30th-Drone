@@ -17,6 +17,9 @@ extern UART_HandleTypeDef huart2;
 #define GNSS_UBX_SYNC_2         0x62U
 #define GNSS_UBX_CLASS_CFG      0x06U
 #define GNSS_UBX_ID_VALSET      0x8AU
+#define GNSS_UBX_CLASS_NAV      0x01U
+#define GNSS_UBX_ID_NAV_PVT     0x07U
+#define GNSS_NAV_PVT_LENGTH     92U
 #define GNSS_VALSET_VERSION     0x01U
 #define GNSS_VALSET_LAYER_RAM   0x01U
 #define GNSS_VALSET_LAYER_BBR   0x02U
@@ -30,6 +33,19 @@ typedef struct
   uint8_t value_size;
 } gnss_ubx_config_entry_t;
 
+typedef enum
+{
+  GNSS_UBX_STATE_SYNC_1 = 0,
+  GNSS_UBX_STATE_SYNC_2,
+  GNSS_UBX_STATE_CLASS,
+  GNSS_UBX_STATE_ID,
+  GNSS_UBX_STATE_LENGTH_1,
+  GNSS_UBX_STATE_LENGTH_2,
+  GNSS_UBX_STATE_PAYLOAD,
+  GNSS_UBX_STATE_CHECKSUM_A,
+  GNSS_UBX_STATE_CHECKSUM_B
+} gnss_ubx_rx_state_t;
+
 static uint8_t gnss_rx_byte = 0U;
 static char gnss_line_buffer[GNSS_LINE_BUFFER_SIZE];
 static char gnss_ready_line[GNSS_LINE_BUFFER_SIZE];
@@ -38,6 +54,16 @@ static volatile uint16_t gnss_ready_length = 0U;
 static volatile uint8_t gnss_collecting = 0U;
 static volatile uint8_t gnss_sentence_ready = 0U;
 static volatile uint8_t gnss_bridge_mode_active = 0U;
+static volatile uint8_t gnss_pvt_ready = 0U;
+static gnss_pvt_t gnss_latest_pvt;
+static gnss_ubx_rx_state_t gnss_ubx_state = GNSS_UBX_STATE_SYNC_1;
+static uint8_t gnss_ubx_class = 0U;
+static uint8_t gnss_ubx_id = 0U;
+static uint16_t gnss_ubx_length = 0U;
+static uint16_t gnss_ubx_payload_index = 0U;
+static uint8_t gnss_ubx_checksum_a = 0U;
+static uint8_t gnss_ubx_checksum_b = 0U;
+static uint8_t gnss_ubx_payload[GNSS_NAV_PVT_LENGTH];
 
 static const gnss_ubx_config_entry_t gnss_drone_config[] = {
     {0x40520001UL, GNSS_DRONE_BAUDRATE, 4U}, /* CFG-UART1-BAUDRATE */
@@ -54,6 +80,9 @@ static const gnss_ubx_config_entry_t gnss_drone_config[] = {
     {0x209100ACUL, 0U, 1U},                  /* CFG-MSGOUT-NMEA_ID_RMC-UART1 */
     {0x209100B1UL, 0U, 1U},                  /* CFG-MSGOUT-NMEA_ID_VTG-UART1 */
 };
+
+static uint32_t gnss_enter_critical(void);
+static void gnss_exit_critical(uint32_t primask);
 
 static void gnss_append_u16(uint8_t *buffer, uint16_t *index, uint16_t value)
 {
@@ -100,6 +129,169 @@ static void gnss_append_ubx_checksum(uint8_t *frame, uint16_t frame_length_witho
 
   frame[frame_length_without_checksum] = checksum_a;
   frame[frame_length_without_checksum + 1U] = checksum_b;
+}
+
+static uint16_t gnss_read_u16_le(const uint8_t *buffer, uint16_t index)
+{
+  return (uint16_t)((uint16_t)buffer[index] | ((uint16_t)buffer[index + 1U] << 8U));
+}
+
+static uint32_t gnss_read_u32_le(const uint8_t *buffer, uint16_t index)
+{
+  return ((uint32_t)buffer[index] |
+          ((uint32_t)buffer[index + 1U] << 8U) |
+          ((uint32_t)buffer[index + 2U] << 16U) |
+          ((uint32_t)buffer[index + 3U] << 24U));
+}
+
+static int32_t gnss_read_i32_le(const uint8_t *buffer, uint16_t index)
+{
+  return (int32_t)gnss_read_u32_le(buffer, index);
+}
+
+static void gnss_ubx_checksum_update(uint8_t data)
+{
+  gnss_ubx_checksum_a = (uint8_t)(gnss_ubx_checksum_a + data);
+  gnss_ubx_checksum_b = (uint8_t)(gnss_ubx_checksum_b + gnss_ubx_checksum_a);
+}
+
+static void gnss_reset_ubx_state(void)
+{
+  gnss_ubx_state = GNSS_UBX_STATE_SYNC_1;
+  gnss_ubx_class = 0U;
+  gnss_ubx_id = 0U;
+  gnss_ubx_length = 0U;
+  gnss_ubx_payload_index = 0U;
+  gnss_ubx_checksum_a = 0U;
+  gnss_ubx_checksum_b = 0U;
+}
+
+static void gnss_store_nav_pvt(void)
+{
+  gnss_pvt_t pvt;
+  uint32_t primask;
+
+  pvt.i_tow_ms = gnss_read_u32_le(gnss_ubx_payload, 0U);
+  pvt.fix_type = gnss_ubx_payload[20U];
+  pvt.fix_ok = (uint8_t)(gnss_ubx_payload[21U] & 0x01U);
+  pvt.satellites_used = gnss_ubx_payload[23U];
+  pvt.longitude_deg_1e7 = gnss_read_i32_le(gnss_ubx_payload, 24U);
+  pvt.latitude_deg_1e7 = gnss_read_i32_le(gnss_ubx_payload, 28U);
+  pvt.height_mm = gnss_read_i32_le(gnss_ubx_payload, 32U);
+  pvt.height_msl_mm = gnss_read_i32_le(gnss_ubx_payload, 36U);
+  pvt.horizontal_accuracy_mm = gnss_read_u32_le(gnss_ubx_payload, 40U);
+  pvt.vertical_accuracy_mm = gnss_read_u32_le(gnss_ubx_payload, 44U);
+  pvt.north_velocity_mm_s = gnss_read_i32_le(gnss_ubx_payload, 48U);
+  pvt.east_velocity_mm_s = gnss_read_i32_le(gnss_ubx_payload, 52U);
+  pvt.down_velocity_mm_s = gnss_read_i32_le(gnss_ubx_payload, 56U);
+  pvt.ground_speed_mm_s = gnss_read_i32_le(gnss_ubx_payload, 60U);
+  pvt.heading_motion_deg_1e5 = gnss_read_i32_le(gnss_ubx_payload, 64U);
+  pvt.speed_accuracy_mm_s = gnss_read_u32_le(gnss_ubx_payload, 68U);
+  pvt.heading_accuracy_deg_1e5 = gnss_read_u32_le(gnss_ubx_payload, 72U);
+  pvt.position_dop_0p01 = gnss_read_u16_le(gnss_ubx_payload, 76U);
+
+  primask = gnss_enter_critical();
+  gnss_latest_pvt = pvt;
+  gnss_pvt_ready = 1U;
+  gnss_exit_critical(primask);
+}
+
+static void gnss_handle_ubx_byte(uint8_t data)
+{
+  switch (gnss_ubx_state)
+  {
+    case GNSS_UBX_STATE_SYNC_1:
+      if (data == GNSS_UBX_SYNC_1)
+      {
+        gnss_ubx_state = GNSS_UBX_STATE_SYNC_2;
+      }
+      break;
+
+    case GNSS_UBX_STATE_SYNC_2:
+      if (data == GNSS_UBX_SYNC_2)
+      {
+        gnss_ubx_checksum_a = 0U;
+        gnss_ubx_checksum_b = 0U;
+        gnss_ubx_state = GNSS_UBX_STATE_CLASS;
+      }
+      else
+      {
+        gnss_ubx_state = GNSS_UBX_STATE_SYNC_1;
+      }
+      break;
+
+    case GNSS_UBX_STATE_CLASS:
+      gnss_ubx_class = data;
+      gnss_ubx_checksum_update(data);
+      gnss_ubx_state = GNSS_UBX_STATE_ID;
+      break;
+
+    case GNSS_UBX_STATE_ID:
+      gnss_ubx_id = data;
+      gnss_ubx_checksum_update(data);
+      gnss_ubx_state = GNSS_UBX_STATE_LENGTH_1;
+      break;
+
+    case GNSS_UBX_STATE_LENGTH_1:
+      gnss_ubx_length = data;
+      gnss_ubx_checksum_update(data);
+      gnss_ubx_state = GNSS_UBX_STATE_LENGTH_2;
+      break;
+
+    case GNSS_UBX_STATE_LENGTH_2:
+      gnss_ubx_length |= (uint16_t)((uint16_t)data << 8U);
+      gnss_ubx_checksum_update(data);
+      gnss_ubx_payload_index = 0U;
+
+      if ((gnss_ubx_class == GNSS_UBX_CLASS_NAV) &&
+          (gnss_ubx_id == GNSS_UBX_ID_NAV_PVT) &&
+          (gnss_ubx_length == GNSS_NAV_PVT_LENGTH))
+      {
+        gnss_ubx_state = GNSS_UBX_STATE_PAYLOAD;
+      }
+      else if (gnss_ubx_length == 0U)
+      {
+        gnss_ubx_state = GNSS_UBX_STATE_CHECKSUM_A;
+      }
+      else
+      {
+        gnss_reset_ubx_state();
+      }
+      break;
+
+    case GNSS_UBX_STATE_PAYLOAD:
+      gnss_ubx_payload[gnss_ubx_payload_index] = data;
+      gnss_ubx_payload_index++;
+      gnss_ubx_checksum_update(data);
+      if (gnss_ubx_payload_index >= gnss_ubx_length)
+      {
+        gnss_ubx_state = GNSS_UBX_STATE_CHECKSUM_A;
+      }
+      break;
+
+    case GNSS_UBX_STATE_CHECKSUM_A:
+      if (data == gnss_ubx_checksum_a)
+      {
+        gnss_ubx_state = GNSS_UBX_STATE_CHECKSUM_B;
+      }
+      else
+      {
+        gnss_reset_ubx_state();
+      }
+      break;
+
+    case GNSS_UBX_STATE_CHECKSUM_B:
+      if (data == gnss_ubx_checksum_b)
+      {
+        gnss_store_nav_pvt();
+      }
+      gnss_reset_ubx_state();
+      break;
+
+    default:
+      gnss_reset_ubx_state();
+      break;
+  }
 }
 
 static HAL_StatusTypeDef gnss_set_uart_baudrate(uint32_t baudrate)
@@ -218,8 +410,10 @@ HAL_StatusTypeDef gnss_init(void)
 
   HAL_GPIO_WritePin(UART2_RESET_GPIO_Port, UART2_RESET_Pin, GPIO_PIN_SET);
   gnss_reset_line_state();
+  gnss_reset_ubx_state();
   gnss_sentence_ready = 0U;
   gnss_ready_length = 0U;
+  gnss_pvt_ready = 0U;
   gnss_bridge_mode_active = 0U;
 
   status = gnss_configure_for_drone();
@@ -276,12 +470,44 @@ bool gnss_read_line(char *buffer, size_t buffer_size)
   return true;
 }
 
+bool gnss_read_pvt(gnss_pvt_t *pvt)
+{
+  uint32_t primask;
+
+  if (pvt == NULL)
+  {
+    return false;
+  }
+
+  if (gnss_bridge_mode_active != 0U)
+  {
+    return false;
+  }
+
+  primask = gnss_enter_critical();
+
+  if (gnss_pvt_ready == 0U)
+  {
+    gnss_exit_critical(primask);
+    return false;
+  }
+
+  *pvt = gnss_latest_pvt;
+  gnss_pvt_ready = 0U;
+
+  gnss_exit_critical(primask);
+
+  return true;
+}
+
 void gnss_set_bridge_mode(uint8_t active)
 {
   gnss_bridge_mode_active = active;
   gnss_reset_line_state();
+  gnss_reset_ubx_state();
   gnss_sentence_ready = 0U;
   gnss_ready_length = 0U;
+  gnss_pvt_ready = 0U;
 
   (void)HAL_UART_AbortReceive(&huart2);
   (void)gnss_start_receive_it();
@@ -295,7 +521,9 @@ void gnss_handle_uart_error(UART_HandleTypeDef *huart)
   }
 
   gnss_reset_line_state();
+  gnss_reset_ubx_state();
   gnss_sentence_ready = 0U;
+  gnss_pvt_ready = 0U;
   (void)HAL_UART_AbortReceive(huart);
   (void)gnss_start_receive_it();
 }
@@ -315,6 +543,8 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
     (void)gnss_start_receive_it();
     return;
   }
+
+  gnss_handle_ubx_byte(gnss_rx_byte);
 
   if (gnss_rx_byte == '$')
   {

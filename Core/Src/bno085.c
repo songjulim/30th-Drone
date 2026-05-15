@@ -285,52 +285,45 @@ static void quaternion_to_euler(float qi, float qj, float qk, float qr)
  */
 static bool parse_rotation_vector(const uint8_t *payload, uint16_t len)
 {
-  /* Scan payload for Report ID 0x05 */
-  for (uint16_t i = 0; i + 13 < len; i++)
-  {
-    if (payload[i] == SH2_ROTATION_VECTOR)
-    {
-      /* Offset from Report ID byte:
-       *   +0  Report ID (0x05)
-       *   +1  Sequence
-       *   +2  Status
-       *   +3  Delay
-       *   +4  Delay MSB (sometimes used, sometimes rolled into +3)
-       *   +4  Quat i LSB
-       *   +5  Quat i MSB
-       *   +6  Quat j LSB
-       *   +7  Quat j MSB
-       *   +8  Quat k LSB
-       *   +9  Quat k MSB
-       *   +10 Quat real LSB
-       *   +11 Quat real MSB
-       *   +12 Accuracy LSB
-       *   +13 Accuracy MSB
-       */
-      const uint8_t *d = &payload[i];
+  if (len < 14U || payload[0] != SH2_ROTATION_VECTOR)
+    return false;
 
-      /* Status bits [1:0] = calibration accuracy (0~3) */
-      mag_cal_status = d[2] & 0x03U;
+  /* Offset from Report ID byte:
+   *   +0  Report ID (0x05)
+   *   +1  Sequence
+   *   +2  Status bits [1:0] = calibration accuracy (0~3)
+   *   +3  Delay
+   *   +4  Quat i LSB
+   *   +5  Quat i MSB
+   *   +6  Quat j LSB
+   *   +7  Quat j MSB
+   *   +8  Quat k LSB
+   *   +9  Quat k MSB
+   *   +10 Quat real LSB
+   *   +11 Quat real MSB
+   *   +12 Accuracy LSB
+   *   +13 Accuracy MSB
+   */
+  const uint8_t *d = payload;
 
-      int16_t qi_raw = (int16_t)((uint16_t)d[5]  << 8 | d[4]);
-      int16_t qj_raw = (int16_t)((uint16_t)d[7]  << 8 | d[6]);
-      int16_t qk_raw = (int16_t)((uint16_t)d[9]  << 8 | d[8]);
-      int16_t qr_raw = (int16_t)((uint16_t)d[11] << 8 | d[10]);
-      int16_t ac_raw = (int16_t)((uint16_t)d[13] << 8 | d[12]);
+  mag_cal_status = d[2] & 0x03U;
 
-      float qi = (float)qi_raw * Q14_SCALE;
-      float qj = (float)qj_raw * Q14_SCALE;
-      float qk = (float)qk_raw * Q14_SCALE;
-      float qr = (float)qr_raw * Q14_SCALE;
+  int16_t qi_raw = (int16_t)((uint16_t)d[5]  << 8 | d[4]);
+  int16_t qj_raw = (int16_t)((uint16_t)d[7]  << 8 | d[6]);
+  int16_t qk_raw = (int16_t)((uint16_t)d[9]  << 8 | d[8]);
+  int16_t qr_raw = (int16_t)((uint16_t)d[11] << 8 | d[10]);
+  int16_t ac_raw = (int16_t)((uint16_t)d[13] << 8 | d[12]);
 
-      heading_accuracy = (float)ac_raw * Q12_SCALE * RAD_TO_DEG;
+  float qi = (float)qi_raw * Q14_SCALE;
+  float qj = (float)qj_raw * Q14_SCALE;
+  float qk = (float)qk_raw * Q14_SCALE;
+  float qr = (float)qr_raw * Q14_SCALE;
 
-      quaternion_to_euler(qi, qj, qk, qr);
-      data_valid = true;
-      return true;
-    }
-  }
-  return false;
+  heading_accuracy = (float)ac_raw * Q12_SCALE * RAD_TO_DEG;
+
+  quaternion_to_euler(qi, qj, qk, qr);
+  data_valid = true;
+  return true;
 }
 
 /* ================================================================
@@ -343,6 +336,13 @@ bool bno085_init(void)
   HAL_Delay(10);
 
   memset(tx_seq, 0, sizeof(tx_seq));
+  euler_yaw = 0.0f;
+  euler_pitch = 0.0f;
+  euler_roll = 0.0f;
+  heading_accuracy = 0.0f;
+  mag_cal_status = 0U;
+  cmd_seq_num = 0U;
+  cal_cmd_status = 0xFF;
   data_valid = false;
 
   /* 1) Initial pin state */

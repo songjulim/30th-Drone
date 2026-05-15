@@ -91,6 +91,7 @@ uint32_t last_battery_check_time = 0;
 
 uint32_t user_step_throttle_compare = 1000U;
 static char gnss_sentence[128];
+static gnss_pvt_t gnss_pvt;
 static uint8_t user_gnss_bridge_mode = 0U;
 
 /* USER CODE END PV */
@@ -328,9 +329,21 @@ int main(void)
     /* USER CODE BEGIN 3 */
     Battery_Process();
     sensor_process();
+    (void)bno085_process();
     switch_update();
     debug_process();
     uart_bridge_process();
+    if (gnss_read_pvt(&gnss_pvt)) {
+      (void)uart1_printf("GNSS fix:%u sv:%u lat:%ld lon:%ld hMSL:%ld hAcc:%lu vAcc:%lu gSpd:%ld\r\n",
+                         gnss_pvt.fix_type,
+                         gnss_pvt.satellites_used,
+                         gnss_pvt.latitude_deg_1e7,
+                         gnss_pvt.longitude_deg_1e7,
+                         gnss_pvt.height_msl_mm,
+                         gnss_pvt.horizontal_accuracy_mm,
+                         gnss_pvt.vertical_accuracy_mm,
+                         gnss_pvt.ground_speed_mm_s);
+    }
     if (gnss_read_line(gnss_sentence, sizeof(gnss_sentence))) {
       (void)uart1_printf("%s\r\n", gnss_sentence);
     }
@@ -348,6 +361,7 @@ int main(void)
         if (main_flag != 0U) {
           main_flag--;
           sensor_process();
+          (void)bno085_process();
           motor_rate_pid_update();
         }
 
