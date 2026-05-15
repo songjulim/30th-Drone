@@ -331,7 +331,7 @@ int main(void)
     sensor_process();
     (void)bno085_process();
     switch_update();
-    debug_process();
+    //debug_process();
     uart_bridge_process();
     if (gnss_read_pvt(&gnss_pvt)) {
       (void)uart1_printf("GNSS fix:%u sv:%u lat:%ld lon:%ld hMSL:%ld hAcc:%lu vAcc:%lu gSpd:%ld\r\n",
@@ -347,9 +347,9 @@ int main(void)
     if (gnss_read_line(gnss_sentence, sizeof(gnss_sentence))) {
       (void)uart1_printf("%s\r\n", gnss_sentence);
     }
-    if (imuimu == 1) {
-      (void)uart1_printf("IMU\r\n");
-    }
+    //if (imuimu == 1) {
+    //  (void)uart1_printf("IMU\r\n");
+    //}
     if (sw_u_flag) {
       HAL_Delay(100);
       motor_reset_rate_pid();
@@ -357,7 +357,7 @@ int main(void)
       motor_set_rate_targets(0, 0, 0);
       while (1) {
         switch_update();
-        debug_process();
+        //debug_process();
         if (main_flag != 0U) {
           main_flag--;
           sensor_process();
