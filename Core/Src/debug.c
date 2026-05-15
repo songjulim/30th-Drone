@@ -14,6 +14,8 @@ extern UART_HandleTypeDef huart1;
 extern UART_HandleTypeDef huart6;
 extern TIM_HandleTypeDef htim3;
 extern uint32_t user_step_throttle_compare;
+extern float battery_voltage;
+extern int8_t battery_percent;
 
 #define UART1_DMA_TX_QUEUE_LENGTH 8U
 #define UART1_DMA_TX_BUFFER_SIZE  160U
@@ -457,10 +459,15 @@ static void Debug_UpdateOledSnapshot(void)
   char pitch_sign = (pitch_tenths < 0) ? '-' : ' ';
   char yaw_sign = (yaw_tenths < 0) ? '-' : ' ';
 
+  float display_voltage = battery_voltage + 0.05f; // 소수점 첫째자리 반올림
+  uint8_t v_int = (uint8_t)display_voltage;
+  uint8_t v_dec = (uint8_t)((display_voltage - v_int) * 10.0f);
+
   OLED_Clear();
   OLED_Printf(0, 0, "GX %c%d.%01d", gx_sign, DebugIntegerPartFromScaled(gx_tenths, 10), DebugAbs(gx_tenths) % 10);
   OLED_Printf(1, 0, "GY %c%d.%01d", gy_sign, DebugIntegerPartFromScaled(gy_tenths, 10), DebugAbs(gy_tenths) % 10);
   OLED_Printf(2, 0, "GZ %c%d.%01d", gz_sign, DebugIntegerPartFromScaled(gz_tenths, 10), DebugAbs(gz_tenths) % 10);
+  OLED_Printf(3, 0, "BAT %d.%dV %d%%", v_int, v_dec, battery_percent);
   OLED_Printf(4, 0, "                ");
   OLED_Printf(5, 0, "                ");
   OLED_Printf(6, 0, "R %c%d.%01d P %c%d.%01d", roll_sign, DebugIntegerPartFromScaled(roll_tenths, 10), DebugAbs(roll_tenths) % 10,

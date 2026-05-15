@@ -79,6 +79,16 @@ DMA_HandleTypeDef hdma_usart6_tx;
 
 /* USER CODE BEGIN PV */
 
+#define BATTERY_FILTER_SIZE 20
+
+uint16_t adc_buffer[BATTERY_FILTER_SIZE];
+uint8_t adc_index = 0;
+uint8_t filter_filled = 0;
+
+float battery_voltage = 0.0f;
+int8_t battery_percent = 0;
+uint32_t last_battery_check_time = 0;
+
 uint32_t user_step_throttle_compare = 1000U;
 static char gnss_sentence[128];
 static uint8_t user_gnss_bridge_mode = 0U;
@@ -110,6 +120,46 @@ static void MX_USART6_UART_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+
+void Battery_Process(void) {
+  if (HAL_GetTick() - last_battery_check_time >= 50) {
+    last_battery_check_time = HAL_GetTick();
+
+    HAL_ADC_Start(&hadc1);
+    if (HAL_ADC_PollForConversion(&hadc1, 10) == HAL_OK) {
+      uint32_t raw_adc = HAL_ADC_GetValue(&hadc1);
+      
+      adc_buffer[adc_index] = raw_adc;
+      adc_index++;
+      if (adc_index >= BATTERY_FILTER_SIZE) {
+        adc_index = 0;
+        filter_filled = 1;
+      }
+
+      if (filter_filled || adc_index > 5) {
+        uint32_t sum = 0;
+        uint8_t count = filter_filled ? BATTERY_FILTER_SIZE : adc_index;
+        
+        for (int i = 0; i < count; i++) {
+          sum += adc_buffer[i];
+        }
+        
+        float avg_adc = (float)sum / count;
+        
+        // 실제 전압(16.0V, 13.8V) 대비 측정값이 항상 0.2V 높게 나오는 현상(16.2V, 14.0V) 오프셋 보정
+        float raw_voltage = (avg_adc / 65535.0f) * 3.3f * 5.7f;
+        battery_voltage = raw_voltage - 0.2f;
+        
+        float percent = (battery_voltage - 13.2f) / (16.8f - 13.2f) * 100.0f;
+        if (percent > 100.0f) percent = 100.0f;
+        if (percent < 0.0f) percent = 0.0f;
+        
+        battery_percent = (int8_t)percent;
+      }
+    }
+    HAL_ADC_Stop(&hadc1);
+  }
+}
 
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
   if (htim == NULL) {
@@ -276,6 +326,7 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+    Battery_Process();
     sensor_process();
     switch_update();
     debug_process();
