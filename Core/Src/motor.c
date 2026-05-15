@@ -33,16 +33,16 @@ typedef struct
 
 static motor_rate_pid_axis_t roll_rate_pid =
 {
-  .kp = 1.20f,      //3.00f
-  .kd = 0.0030f,     //0.008f
+  .kp = 1.200f,      //1.2f
+  .kd = 0.003f,     //0.003f
   .previous_measurement_dps = 0.0f,
   .initialized = 0U
 };
 
 static motor_rate_pid_axis_t pitch_rate_pid =
 {
-  .kp = 1.40f,      //4.00f
-  .kd = 0.0030f,     //0.005f
+  .kp = 1.200f,      //1.2f
+  .kd = 0.003f,     //0.003f
   .previous_measurement_dps = 0.0f,
   .initialized = 0U
 };
@@ -57,14 +57,14 @@ static motor_rate_pid_axis_t yaw_rate_pid =
 
 static motor_angle_pd_axis_t roll_angle_pd =
 {
-  .kp = 1.50f,
-  .kd = 0.02f
+  .kp = 1.50f,    //1.5
+  .kd = 0.02f     //0.02
 };
 
 static motor_angle_pd_axis_t pitch_angle_pd =
 {
-  .kp = 1.50f,
-  .kd = 0.02f
+  .kp = 1.50f,    //1.5
+  .kd = 0.02f     //0.02
 };
 
 static uint32_t motor_throttle_compare = MOTOR_OUTPUT_MIN_COMPARE;
@@ -306,17 +306,21 @@ void motor_rate_pid_update(void)
                                     effective_roll_rate_dps,
                                     sensor_gyro_x_dps);
   pitch_output = motor_rate_pid_step(&pitch_rate_pid,
+
                                      effective_pitch_rate_dps,
                                      sensor_gyro_y_dps);
   yaw_output = motor_rate_pid_step(&yaw_rate_pid,
                                    motor_target_yaw_rate_dps,
                                    sensor_gyro_z_dps);
 
-  motor_set_channels(motor_clamp_compare(base_compare + pitch_output - roll_output + yaw_output),
-                     motor_clamp_compare(base_compare + pitch_output + roll_output - yaw_output),
-                     motor_clamp_compare(base_compare - pitch_output + roll_output + yaw_output),
-                     motor_clamp_compare(base_compare - pitch_output - roll_output - yaw_output));
+  motor_set_channels(motor_clamp_compare(base_compare - pitch_output + roll_output - yaw_output),
+                     motor_clamp_compare(base_compare - pitch_output - roll_output + yaw_output),
+                     motor_clamp_compare(base_compare + pitch_output - roll_output - yaw_output),
+                     motor_clamp_compare(base_compare + pitch_output + roll_output + yaw_output));
 }
+
+
+
 
 void motor_stop(void)
 {
