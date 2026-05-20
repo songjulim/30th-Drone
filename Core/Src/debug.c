@@ -23,7 +23,7 @@ extern int8_t battery_percent;
 #define UART1_DMA_RX_BUFFER_SIZE  16U
 #define UART1_TRIGGER_HOLD_MS      1000U
 #define UART6_DMA_TX_QUEUE_LENGTH 8U
-#define UART6_DMA_TX_BUFFER_SIZE  80U
+#define UART6_DMA_TX_BUFFER_SIZE  256U
 #define UART6_DMA_RX_BUFFER_SIZE  16U
 
 typedef struct
@@ -37,7 +37,7 @@ typedef struct
 {
   uint8_t data[UART6_DMA_TX_BUFFER_SIZE];
   uint16_t length;
-  uint8_t reserved[14];
+  uint8_t reserved[30];
 } uart6_dma_tx_entry_t;
 
 static uart1_dma_tx_entry_t uart1_dma_tx_queue[UART1_DMA_TX_QUEUE_LENGTH]
@@ -136,16 +136,50 @@ static void UART6_DMATxRespond(uint16_t length)
     rx_text[length] = '\0';
     rx_value = strtof(rx_text, &parse_end);
 
-    if ((parse_end == rx_text) || (*parse_end != '\0') || (rx_value < 1000.0f) || (rx_value > 2000.0f))
+    if ((parse_end == rx_text) || (*parse_end != '\0'))
     {
       return;
     }
-    else
+    else if (rx_value == 0.0f)
     {
-      uart6_rx_float_value = rx_value;
-      motor_set_throttle((uint32_t)rx_value);
+      motor_set_angle_targets(0.0f, 0.0f);
       tx_data = uart6_dma_rx_buffer;
       tx_length = length;
+    }
+    else if (rx_value == 1.0f)
+    {
+      motor_set_angle_targets(motor_target_roll_angle_deg + 1.0f, motor_target_pitch_angle_deg);
+      tx_data = uart6_dma_rx_buffer;
+      tx_length = length;
+    }
+    else if (rx_value == 2.0f)
+    {
+      motor_set_angle_targets(motor_target_roll_angle_deg, motor_target_pitch_angle_deg - 1.0f);
+      tx_data = uart6_dma_rx_buffer;
+      tx_length = length;
+    }
+    else if (rx_value == 3.0f)
+    {
+      motor_set_angle_targets(motor_target_roll_angle_deg, motor_target_pitch_angle_deg + 1.0f);
+      tx_data = uart6_dma_rx_buffer;
+      tx_length = length;
+    }
+    else if (rx_value == 4.0f)
+    {
+      motor_set_angle_targets(motor_target_roll_angle_deg - 1.0f, motor_target_pitch_angle_deg);
+      tx_data = uart6_dma_rx_buffer;
+      tx_length = length;
+    }
+    else if ((rx_value >= 1000.0f) && (rx_value <= 2000.0f))
+    {
+      uart6_rx_float_value = rx_value;
+      motor_set_throttle_ramp((uint32_t)rx_value, 1000U);
+      tx_data = uart6_dma_rx_buffer;
+      tx_length = length;
+    }
+    else
+    {
+      return;
     }
   }
 
@@ -412,19 +446,118 @@ static HAL_StatusTypeDef UART6_DMATxEnqueue(const uint8_t *data, uint16_t length
 static void Debug_SendUart6Telemetry(void)
 {
   char tx_buffer[UART6_DMA_TX_BUFFER_SIZE];
-  int roll_rate = (int)(sensor_gyro_x_dps * 100.0f);
-  int pitch_rate = (int)(sensor_gyro_y_dps * 100.0f);
-  int yaw_rate = (int)(sensor_gyro_z_dps * 100.0f);
-  int roll_angle = (int)(sensor_roll_deg * 100.0f);
-  int pitch_angle = (int)(sensor_pitch_deg * 100.0f);
+  int gyro_x;
+  int roll_deg;
+  int roll_target_deg;
+  int roll_target_rate;
+  int roll_angle_error;
+  int roll_angle_output;
+  int roll_rate_error;
+  int roll_output;
+  int effective_roll_rate;
+  int roll_p_output;
+  int roll_i_output;
+  int roll_d_output;
+  int accel_norm;
+  int accel_trust;
+  uint32_t channel_1_compare;
+  uint32_t channel_2_compare;
+  uint32_t channel_3_compare;
+  uint32_t channel_4_compare;
+  float roll_output_value;
+  float pitch_output_value;
+  float yaw_output_value;
+  float effective_roll_rate_value;
+  float effective_pitch_rate_value;
+  float roll_angle_error_value;
+  float roll_angle_output_value;
+  float roll_rate_error_value;
+  float roll_p_output_value;
+  float roll_i_output_value;
+  float roll_d_output_value;
   int length;
 
-  length = snprintf(tx_buffer, sizeof(tx_buffer), "%c%d.%02d, %c%d.%02d, %c%d.%02d, %c%d.%02d, %c%d.%02d\r\n",
-                    (roll_rate < 0) ? '-' : ' ', DebugAbs(roll_rate) / 100, DebugAbs(roll_rate) % 100,
-                    (pitch_rate < 0) ? '-' : ' ', DebugAbs(pitch_rate) / 100, DebugAbs(pitch_rate) % 100,
-                    (yaw_rate < 0) ? '-' : ' ', DebugAbs(yaw_rate) / 100, DebugAbs(yaw_rate) % 100,
-                    (roll_angle < 0) ? '-' : ' ', DebugAbs(roll_angle) / 100, DebugAbs(roll_angle) % 100,
-                    (pitch_angle < 0) ? '-' : ' ', DebugAbs(pitch_angle) / 100, DebugAbs(pitch_angle) % 100);
+  motor_get_channels(&channel_1_compare,
+                     &channel_2_compare,
+                     &channel_3_compare,
+                     &channel_4_compare);
+  motor_get_control_outputs(&roll_output_value,
+                            &pitch_output_value,
+                            &yaw_output_value,
+                            &effective_roll_rate_value,
+                            &effective_pitch_rate_value);
+  motor_get_roll_tuning_debug(&roll_angle_error_value,
+                              &roll_angle_output_value,
+                              &roll_rate_error_value,
+                              &roll_p_output_value,
+                              &roll_i_output_value,
+                              &roll_d_output_value);
+
+  gyro_x = (int)(sensor_gyro_x_dps * 100.0f);
+  roll_deg = (int)(sensor_roll_deg * 100.0f);
+  roll_target_deg = (int)(motor_target_roll_angle_deg * 100.0f);
+  roll_target_rate = (int)(motor_target_roll_rate_dps * 100.0f);
+  roll_angle_error = (int)(roll_angle_error_value * 100.0f);
+  roll_angle_output = (int)(roll_angle_output_value * 100.0f);
+  roll_rate_error = (int)(roll_rate_error_value * 100.0f);
+  roll_output = (int)(roll_output_value * 100.0f);
+  effective_roll_rate = (int)(effective_roll_rate_value * 100.0f);
+  roll_p_output = (int)(roll_p_output_value * 100.0f);
+  roll_i_output = (int)(roll_i_output_value * 100.0f);
+  roll_d_output = (int)(roll_d_output_value * 100.0f);
+  accel_norm = (int)(sensor_accel_norm_g * 100.0f);
+  accel_trust = (int)(sensor_accel_trust * 100.0f);
+
+  (void)pitch_output_value;
+  (void)yaw_output_value;
+  (void)effective_pitch_rate_value;
+
+#if 0
+  /* Legacy Bluetooth telemetry is temporarily disabled for pitch tuning. */
+  length = snprintf(tx_buffer,
+                    sizeof(tx_buffer),
+                    "-----------\r\n%lu,%lu,%lu,%lu,%lu,%lu,%s%d.%02d,%s%d.%02d,%s%d.%02d,%s%d.%02d,%s%d.%02d,%s%d.%02d,%s%d.%02d,%s%d.%02d,%s%d.%02d,%s%d.%02d\r\n",
+                    (unsigned long)HAL_GetTick(),
+                    (unsigned long)motor_get_throttle(),
+                    (unsigned long)channel_1_compare,
+                    (unsigned long)channel_2_compare,
+                    (unsigned long)channel_3_compare,
+                    (unsigned long)channel_4_compare,
+                    (gyro_x < 0) ? "-" : "", DebugAbs(gyro_x) / 100, DebugAbs(gyro_x) % 100,
+                    (gyro_y < 0) ? "-" : "", DebugAbs(gyro_y) / 100, DebugAbs(gyro_y) % 100,
+                    (gyro_z < 0) ? "-" : "", DebugAbs(gyro_z) / 100, DebugAbs(gyro_z) % 100,
+                    (roll_deg < 0) ? "-" : "", DebugAbs(roll_deg) / 100, DebugAbs(roll_deg) % 100,
+                    (pitch_deg < 0) ? "-" : "", DebugAbs(pitch_deg) / 100, DebugAbs(pitch_deg) % 100,
+                    (roll_output < 0) ? "-" : "", DebugAbs(roll_output) / 100, DebugAbs(roll_output) % 100,
+                    (pitch_output < 0) ? "-" : "", DebugAbs(pitch_output) / 100, DebugAbs(pitch_output) % 100,
+                    (yaw_output < 0) ? "-" : "", DebugAbs(yaw_output) / 100, DebugAbs(yaw_output) % 100,
+                    (effective_roll_rate < 0) ? "-" : "", DebugAbs(effective_roll_rate) / 100, DebugAbs(effective_roll_rate) % 100,
+                    (effective_pitch_rate < 0) ? "-" : "", DebugAbs(effective_pitch_rate) / 100, DebugAbs(effective_pitch_rate) % 100);
+#endif
+
+  length = snprintf(tx_buffer,
+                    sizeof(tx_buffer),
+                    "-----------\r\nROLL,%lu,%lu,%lu,%lu,%lu,%lu,%s%d.%02d,%s%d.%02d,%s%d.%02d,%s%d.%02d,%s%d.%02d,%s%d.%02d,%s%d.%02d,%s%d.%02d,%s%d.%02d,%s%d.%02d,%s%d.%02d,%s%d.%02d,%s%d.%02d,%s%d.%02d\r\n",
+                    (unsigned long)HAL_GetTick(),
+                    (unsigned long)motor_get_throttle(),
+                    (unsigned long)channel_1_compare,
+                    (unsigned long)channel_2_compare,
+                    (unsigned long)channel_3_compare,
+                    (unsigned long)channel_4_compare,
+                    (gyro_x < 0) ? "-" : "", DebugAbs(gyro_x) / 100, DebugAbs(gyro_x) % 100,
+                    (roll_deg < 0) ? "-" : "", DebugAbs(roll_deg) / 100, DebugAbs(roll_deg) % 100,
+                    (roll_target_deg < 0) ? "-" : "", DebugAbs(roll_target_deg) / 100, DebugAbs(roll_target_deg) % 100,
+                    (roll_target_rate < 0) ? "-" : "", DebugAbs(roll_target_rate) / 100, DebugAbs(roll_target_rate) % 100,
+                    (effective_roll_rate < 0) ? "-" : "", DebugAbs(effective_roll_rate) / 100, DebugAbs(effective_roll_rate) % 100,
+                    (roll_angle_error < 0) ? "-" : "", DebugAbs(roll_angle_error) / 100, DebugAbs(roll_angle_error) % 100,
+                    (roll_angle_output < 0) ? "-" : "", DebugAbs(roll_angle_output) / 100, DebugAbs(roll_angle_output) % 100,
+                    (roll_rate_error < 0) ? "-" : "", DebugAbs(roll_rate_error) / 100, DebugAbs(roll_rate_error) % 100,
+                    (roll_output < 0) ? "-" : "", DebugAbs(roll_output) / 100, DebugAbs(roll_output) % 100,
+                    (roll_p_output < 0) ? "-" : "", DebugAbs(roll_p_output) / 100, DebugAbs(roll_p_output) % 100,
+                    (roll_i_output < 0) ? "-" : "", DebugAbs(roll_i_output) / 100, DebugAbs(roll_i_output) % 100,
+                    (roll_d_output < 0) ? "-" : "", DebugAbs(roll_d_output) / 100, DebugAbs(roll_d_output) % 100,
+                    (accel_norm < 0) ? "-" : "", DebugAbs(accel_norm) / 100, DebugAbs(accel_norm) % 100,
+                    (accel_trust < 0) ? "-" : "", DebugAbs(accel_trust) / 100, DebugAbs(accel_trust) % 100);
 
   if (length > 0)
   {

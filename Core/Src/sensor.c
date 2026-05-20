@@ -25,7 +25,8 @@ extern SPI_HandleTypeDef hspi2;
 #define LSM6DSR_SETTLE_MAX_ATTEMPTS     64U
 #define LSM6DSR_CALIBRATION_MAX_ATTEMPTS 320U
 #define LSM6DSR_SPI_WRITE_RETRIES       4U
-#define LSM6DSR_FILTER_SHIFT            4
+#define LSM6DSR_GYRO_FILTER_SHIFT       2
+#define LSM6DSR_ACCEL_FILTER_SHIFT      4
 #define LSM6DSR_MOTION_BURST_LENGTH     12U
 #define LSM6DSR_ACCEL_SENS_G_PER_LSB    0.000061f
 #define LSM6DSR_GYRO_SENS_DPS_PER_LSB   0.00875f
@@ -33,16 +34,26 @@ extern SPI_HandleTypeDef hspi2;
 #define LSM6DSR_RAD_TO_DEG              57.2957795f
 #define LSM6DSR_COMP_TAU_SECONDS        0.5f
 #define LSM6DSR_ACCEL_LPF_TAU_SECONDS   0.05f
-#define LSM6DSR_GYRO_LPF_TAU_SECONDS    0.02f
-#define LSM6DSR_ANGLE_LPF_TAU_SECONDS   0.03f
-#define LSM6DSR_ACCEL_TRUST_FULL_G_ERR  0.05f
-#define LSM6DSR_ACCEL_TRUST_ZERO_G_ERR  0.15f
+#define LSM6DSR_GYRO_LPF_TAU_SECONDS    0.020f
+#define LSM6DSR_ANGLE_LPF_TAU_SECONDS   0.010f
+#define LSM6DSR_ACCEL_TRUST_FULL_G_ERR  0.25f
+#define LSM6DSR_ACCEL_TRUST_ZERO_G_ERR  0.60f
+#define LSM6DSR_ACCEL_TRUST_SLEW_SECONDS 0.05f
+#define LSM6DSR_ACCEL_TRUST_SLEW_STEP   (LSM6DSR_DT_SECONDS / LSM6DSR_ACCEL_TRUST_SLEW_SECONDS)
 #define LSM6DSR_ACCEL_K_BASE            (LSM6DSR_DT_SECONDS / (LSM6DSR_COMP_TAU_SECONDS + LSM6DSR_DT_SECONDS))
 #define LSM6DSR_GYRO_LPF_K              (LSM6DSR_DT_SECONDS / (LSM6DSR_GYRO_LPF_TAU_SECONDS + LSM6DSR_DT_SECONDS))
 #define LSM6DSR_ACCEL_LPF_K             (LSM6DSR_DT_SECONDS / (LSM6DSR_ACCEL_LPF_TAU_SECONDS + LSM6DSR_DT_SECONDS))
 #define LSM6DSR_ANGLE_LPF_K             (LSM6DSR_DT_SECONDS / (LSM6DSR_ANGLE_LPF_TAU_SECONDS + LSM6DSR_DT_SECONDS))
 #define LSM6DSR_ZERO_TRIM_ALPHA         0.0005f
 #define LSM6DSR_STILL_GYRO_DPS          1.0f
+#define LSM6DSR_ACCEL_BIAS_X_RAW        (-183.425f)
+#define LSM6DSR_ACCEL_BIAS_Y_RAW        (-179.0f)
+#define LSM6DSR_ACCEL_BIAS_Z_RAW        337.375f
+#define LSM6DSR_ACCEL_SCALE_X_RAW       15650.175f
+#define LSM6DSR_ACCEL_SCALE_Y_RAW       15388.5f
+#define LSM6DSR_ACCEL_SCALE_Z_RAW       15400.375f
+#define LSM6DSR_ROLL_OFFSET_DEG         0.07f
+#define LSM6DSR_PITCH_OFFSET_DEG        (-0.33f)
 
 static uint8_t spi2_who_am_i_tx_buffer[32] __attribute__((aligned(32), section(".dma_buffer")));
 static uint8_t spi2_who_am_i_rx_buffer[32] __attribute__((aligned(32), section(".dma_buffer")));
@@ -58,6 +69,8 @@ volatile float sensor_accel_z_g = 0.0f;
 volatile float sensor_roll_deg = 0.0f;
 volatile float sensor_pitch_deg = 0.0f;
 volatile float sensor_yaw_deg = 0.0f;
+volatile float sensor_accel_norm_g = 0.0f;
+volatile float sensor_accel_trust = 0.0f;
 volatile int imuimu = 0;
 
 typedef struct
@@ -104,6 +117,7 @@ static float sensor_accel_lpf_z_g = 0.0f;
 static float sensor_roll_lpf_deg = 0.0f;
 static float sensor_pitch_lpf_deg = 0.0f;
 static float sensor_yaw_lpf_deg = 0.0f;
+static float accel_trust_state = 1.0f;
 static uint8_t filter_initialized = 0U;
 static uint8_t attitude_initialized = 0U;
 static uint8_t sensor_output_filter_initialized = 0U;
@@ -113,10 +127,22 @@ static volatile uint8_t spi2_motion_dma_busy = 0U;
 static volatile uint8_t motion_sample_ready = 0U;
 static volatile uint8_t motion_read_error = 0U;
 static float LSM6DSR_LowPassStep(float previous_value, float input_value, float alpha);
+static float LSM6DSR_CalibratedAccelRawToG(float raw_value, float bias, float scale);
+static int32_t LSM6DSR_CalibratedAccelRawToIdealRaw(int16_t raw_value, float bias, float scale);
 
 static float LSM6DSR_LowPassStep(float previous_value, float input_value, float alpha)
 {
   return previous_value + (alpha * (input_value - previous_value));
+}
+
+static float LSM6DSR_CalibratedAccelRawToG(float raw_value, float bias, float scale)
+{
+  return (raw_value - bias) / scale;
+}
+
+static int32_t LSM6DSR_CalibratedAccelRawToIdealRaw(int16_t raw_value, float bias, float scale)
+{
+  return (int32_t)(LSM6DSR_CalibratedAccelRawToG((float)raw_value, bias, scale) * (float)LSM6DSR_ACCEL_1G_RAW);
 }
 
 static void SPI2_DMA_PrepareBuffers(void)
@@ -256,9 +282,6 @@ static HAL_StatusTypeDef LSM6DSR_CalibrateStationaryBias(void)
   int32_t gyro_x_sum = 0;
   int32_t gyro_y_sum = 0;
   int32_t gyro_z_sum = 0;
-  int32_t accel_x_sum = 0;
-  int32_t accel_y_sum = 0;
-  int32_t accel_z_sum = 0;
   uint32_t index;
   uint32_t valid_samples = 0U;
 
@@ -297,9 +320,6 @@ static HAL_StatusTypeDef LSM6DSR_CalibrateStationaryBias(void)
     gyro_x_sum += sample.gyro_x;
     gyro_y_sum += sample.gyro_y;
     gyro_z_sum += sample.gyro_z;
-    accel_x_sum += sample.accel_x;
-    accel_y_sum += sample.accel_y;
-    accel_z_sum += sample.accel_z;
     valid_samples++;
 
     HAL_Delay(10);
@@ -318,9 +338,9 @@ static HAL_StatusTypeDef LSM6DSR_CalibrateStationaryBias(void)
   motion_bias.gyro_x = (int16_t)(gyro_x_sum / (int32_t)LSM6DSR_CALIBRATION_SAMPLES);
   motion_bias.gyro_y = (int16_t)(gyro_y_sum / (int32_t)LSM6DSR_CALIBRATION_SAMPLES);
   motion_bias.gyro_z = (int16_t)(gyro_z_sum / (int32_t)LSM6DSR_CALIBRATION_SAMPLES);
-  motion_bias.accel_x = (int16_t)(accel_x_sum / (int32_t)LSM6DSR_CALIBRATION_SAMPLES);
-  motion_bias.accel_y = (int16_t)(accel_y_sum / (int32_t)LSM6DSR_CALIBRATION_SAMPLES);
-  motion_bias.accel_z = (int16_t)((accel_z_sum / (int32_t)LSM6DSR_CALIBRATION_SAMPLES) - LSM6DSR_ACCEL_1G_RAW);
+  motion_bias.accel_x = 0;
+  motion_bias.accel_y = 0;
+  motion_bias.accel_z = 0;
 
   return HAL_OK;
 }
@@ -330,9 +350,9 @@ static void LSM6DSR_FilterMotion(const lsm6dsr_raw_data_t *raw_motion)
   int32_t gyro_x = (int32_t)raw_motion->gyro_x - motion_bias.gyro_x;
   int32_t gyro_y = (int32_t)raw_motion->gyro_y - motion_bias.gyro_y;
   int32_t gyro_z = (int32_t)raw_motion->gyro_z - motion_bias.gyro_z;
-  int32_t accel_x = (int32_t)raw_motion->accel_x - motion_bias.accel_x;
-  int32_t accel_y = (int32_t)raw_motion->accel_y - motion_bias.accel_y;
-  int32_t accel_z = (int32_t)raw_motion->accel_z - motion_bias.accel_z;
+  int32_t accel_x = LSM6DSR_CalibratedAccelRawToIdealRaw(raw_motion->accel_x, LSM6DSR_ACCEL_BIAS_X_RAW, LSM6DSR_ACCEL_SCALE_X_RAW);
+  int32_t accel_y = LSM6DSR_CalibratedAccelRawToIdealRaw(raw_motion->accel_y, LSM6DSR_ACCEL_BIAS_Y_RAW, LSM6DSR_ACCEL_SCALE_Y_RAW);
+  int32_t accel_z = LSM6DSR_CalibratedAccelRawToIdealRaw(raw_motion->accel_z, LSM6DSR_ACCEL_BIAS_Z_RAW, LSM6DSR_ACCEL_SCALE_Z_RAW);
 
   if (filter_initialized == 0U)
   {
@@ -346,12 +366,12 @@ static void LSM6DSR_FilterMotion(const lsm6dsr_raw_data_t *raw_motion)
     return;
   }
 
-  filtered_motion.gyro_x += (gyro_x - filtered_motion.gyro_x) >> LSM6DSR_FILTER_SHIFT;
-  filtered_motion.gyro_y += (gyro_y - filtered_motion.gyro_y) >> LSM6DSR_FILTER_SHIFT;
-  filtered_motion.gyro_z += (gyro_z - filtered_motion.gyro_z) >> LSM6DSR_FILTER_SHIFT;
-  filtered_motion.accel_x += (accel_x - filtered_motion.accel_x) >> LSM6DSR_FILTER_SHIFT;
-  filtered_motion.accel_y += (accel_y - filtered_motion.accel_y) >> LSM6DSR_FILTER_SHIFT;
-  filtered_motion.accel_z += (accel_z - filtered_motion.accel_z) >> LSM6DSR_FILTER_SHIFT;
+  filtered_motion.gyro_x += (gyro_x - filtered_motion.gyro_x) >> LSM6DSR_GYRO_FILTER_SHIFT;
+  filtered_motion.gyro_y += (gyro_y - filtered_motion.gyro_y) >> LSM6DSR_GYRO_FILTER_SHIFT;
+  filtered_motion.gyro_z += (gyro_z - filtered_motion.gyro_z) >> LSM6DSR_GYRO_FILTER_SHIFT;
+  filtered_motion.accel_x += (accel_x - filtered_motion.accel_x) >> LSM6DSR_ACCEL_FILTER_SHIFT;
+  filtered_motion.accel_y += (accel_y - filtered_motion.accel_y) >> LSM6DSR_ACCEL_FILTER_SHIFT;
+  filtered_motion.accel_z += (accel_z - filtered_motion.accel_z) >> LSM6DSR_ACCEL_FILTER_SHIFT;
 }
 
 static void LSM6DSR_UpdateAttitude(const lsm6dsr_filtered_data_t *motion)
@@ -365,6 +385,7 @@ static void LSM6DSR_UpdateAttitude(const lsm6dsr_filtered_data_t *motion)
   float gyro_norm_dps = sqrtf((gx_dps * gx_dps) + (gy_dps * gy_dps) + (gz_dps * gz_dps));
   float accel_norm_g = sqrtf((ax_g * ax_g) + (ay_g * ay_g) + (az_g * az_g));
   float accel_error_g;
+  float accel_trust_target;
   float accel_trust;
   float accel_trust_weight;
   float roll_acc_deg;
@@ -402,9 +423,12 @@ static void LSM6DSR_UpdateAttitude(const lsm6dsr_filtered_data_t *motion)
     sensor_accel_x_g = sensor_accel_lpf_x_g;
     sensor_accel_y_g = sensor_accel_lpf_y_g;
     sensor_accel_z_g = sensor_accel_lpf_z_g;
-    sensor_roll_deg = sensor_roll_lpf_deg;
-    sensor_pitch_deg = sensor_pitch_lpf_deg;
+    sensor_roll_deg = sensor_roll_lpf_deg - LSM6DSR_ROLL_OFFSET_DEG;
+    sensor_pitch_deg = sensor_pitch_lpf_deg - LSM6DSR_PITCH_OFFSET_DEG;
     sensor_yaw_deg = sensor_yaw_lpf_deg;
+    sensor_accel_norm_g = accel_norm_g;
+    accel_trust_state = 1.0f;
+    sensor_accel_trust = 1.0f;
     sensor_output_filter_initialized = 1U;
     attitude_initialized = 1U;
     return;
@@ -426,17 +450,36 @@ static void LSM6DSR_UpdateAttitude(const lsm6dsr_filtered_data_t *motion)
 
   if (accel_error_g <= LSM6DSR_ACCEL_TRUST_FULL_G_ERR)
   {
-    accel_trust = 1.0f;
+    accel_trust_target = 1.0f;
   }
   else if (accel_error_g >= LSM6DSR_ACCEL_TRUST_ZERO_G_ERR)
   {
-    accel_trust = 0.0f;
+    accel_trust_target = 0.0f;
   }
   else
   {
-    accel_trust = (LSM6DSR_ACCEL_TRUST_ZERO_G_ERR - accel_error_g) /
-                  (LSM6DSR_ACCEL_TRUST_ZERO_G_ERR - LSM6DSR_ACCEL_TRUST_FULL_G_ERR);
+    accel_trust_target = (LSM6DSR_ACCEL_TRUST_ZERO_G_ERR - accel_error_g) /
+                         (LSM6DSR_ACCEL_TRUST_ZERO_G_ERR - LSM6DSR_ACCEL_TRUST_FULL_G_ERR);
   }
+
+  if (accel_trust_state < accel_trust_target)
+  {
+    accel_trust_state += LSM6DSR_ACCEL_TRUST_SLEW_STEP;
+    if (accel_trust_state > accel_trust_target)
+    {
+      accel_trust_state = accel_trust_target;
+    }
+  }
+  else if (accel_trust_state > accel_trust_target)
+  {
+    accel_trust_state -= LSM6DSR_ACCEL_TRUST_SLEW_STEP;
+    if (accel_trust_state < accel_trust_target)
+    {
+      accel_trust_state = accel_trust_target;
+    }
+  }
+
+  accel_trust = accel_trust_state;
 
   accel_trust_weight = accel_trust * accel_trust;
 
@@ -453,6 +496,8 @@ static void LSM6DSR_UpdateAttitude(const lsm6dsr_filtered_data_t *motion)
   }
 
   attitude.accel_norm_g = accel_norm_g;
+  sensor_accel_norm_g = accel_norm_g;
+  sensor_accel_trust = accel_trust;
 
   if (sensor_output_filter_initialized == 0U)
   {
@@ -480,8 +525,8 @@ static void LSM6DSR_UpdateAttitude(const lsm6dsr_filtered_data_t *motion)
     sensor_yaw_lpf_deg = LSM6DSR_LowPassStep(sensor_yaw_lpf_deg, attitude.yaw_rel_deg, LSM6DSR_ANGLE_LPF_K);
   }
 
-  output_roll_deg = sensor_roll_lpf_deg;
-  output_pitch_deg = sensor_pitch_lpf_deg;
+  output_roll_deg = sensor_roll_lpf_deg - LSM6DSR_ROLL_OFFSET_DEG;
+  output_pitch_deg = sensor_pitch_lpf_deg - LSM6DSR_PITCH_OFFSET_DEG;
   output_yaw_deg = sensor_yaw_lpf_deg;
   sensor_gyro_x_dps = sensor_gyro_lpf_x_dps;
   sensor_gyro_y_dps = sensor_gyro_lpf_y_dps;

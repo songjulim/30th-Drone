@@ -250,6 +250,7 @@ int main(void)
       OLED_Clear();
       OLED_Printf(4, 0, "Loading...");
       OLED_Update();
+      HAL_Delay(1500);
       break;
     }
 
@@ -355,6 +356,7 @@ int main(void)
       motor_reset_rate_pid();
       motor_set_throttle(1060U);
       motor_set_rate_targets(0, 0, 0);
+      motor_set_angle_targets(0.0f, 0.0f);
       while (1) {
         switch_update();
         //debug_process();
@@ -365,7 +367,7 @@ int main(void)
           motor_rate_pid_update();
         }
 
-        if (sw_d_flag) {
+        if ((sw_d_flag) || ((GPIOC->IDR & GPIO_PIN_8) == 0U)) {
           motor_stop();
           break;
         }
@@ -1136,7 +1138,7 @@ static void MX_USART6_UART_Init(void)
 
   /* USER CODE END USART6_Init 1 */
   huart6.Instance = USART6;
-  huart6.Init.BaudRate = 9600;
+  huart6.Init.BaudRate = 115200;
   huart6.Init.WordLength = UART_WORDLENGTH_8B;
   huart6.Init.StopBits = UART_STOPBITS_1;
   huart6.Init.Parity = UART_PARITY_NONE;
@@ -1233,7 +1235,7 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_WritePin(SPI4_CS_GPIO_Port, SPI4_CS_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOC, SPI4_RESET_Pin|SPI1_RESET_Pin|GPIO_PIN_8, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOC, SPI4_RESET_Pin|SPI1_RESET_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(UART2_RESET_GPIO_Port, UART2_RESET_Pin, GPIO_PIN_SET);
@@ -1265,8 +1267,8 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(SPI4_INT_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : SPI4_RESET_Pin SPI1_RESET_Pin PC8 */
-  GPIO_InitStruct.Pin = SPI4_RESET_Pin|SPI1_RESET_Pin|GPIO_PIN_8;
+  /*Configure GPIO pins : SPI4_RESET_Pin SPI1_RESET_Pin */
+  GPIO_InitStruct.Pin = SPI4_RESET_Pin|SPI1_RESET_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
@@ -1302,6 +1304,12 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : PC8 */
+  GPIO_InitStruct.Pin = GPIO_PIN_8;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
   /*Configure GPIO pins : SW_U_Pin SW_D_Pin SW_L_Pin SW_R_Pin
                            SW_P_Pin */
