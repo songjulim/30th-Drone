@@ -5,6 +5,7 @@
 #include "main.h"
 #include "sensor.h"
 #include "uart_bridge.h"
+#include "n6_rcv.h"
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -792,6 +793,13 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
   if (huart->Instance == USART2)
   {
     gnss_handle_uart_error(huart);
+    return;
+  }
+
+  if (huart->Instance == USART3)
+  {
+    (void)HAL_UART_AbortReceive(huart);
+    N6_RCV_Init(huart);
     return;
   }
 

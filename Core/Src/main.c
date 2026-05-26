@@ -30,6 +30,9 @@
 #include "stm32h7xx_hal_gpio.h"
 #include "switch.h"
 #include "uart_bridge.h"
+#include "lora.h"
+#include "telemetry.h"
+#include "n6_rcv.h"
 
 /* USER CODE END Includes */
 
@@ -63,6 +66,8 @@ SPI_HandleTypeDef hspi3;
 SPI_HandleTypeDef hspi4;
 DMA_HandleTypeDef hdma_spi2_rx;
 DMA_HandleTypeDef hdma_spi2_tx;
+DMA_HandleTypeDef hdma_spi4_rx;
+DMA_HandleTypeDef hdma_spi4_tx;
 
 TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim2;
@@ -71,6 +76,7 @@ TIM_HandleTypeDef htim4;
 
 UART_HandleTypeDef huart1;
 UART_HandleTypeDef huart2;
+UART_HandleTypeDef huart3;
 UART_HandleTypeDef huart6;
 DMA_HandleTypeDef hdma_usart1_tx;
 DMA_HandleTypeDef hdma_usart1_rx;
@@ -91,8 +97,8 @@ uint32_t last_battery_check_time = 0;
 
 uint32_t user_step_throttle_compare = 1000U;
 static char gnss_sentence[128];
-static gnss_pvt_t gnss_pvt;
 static uint8_t user_gnss_bridge_mode = 0U;
+volatile uint8_t lora_rx_flag = 0;  // rx 인터럽트 들어오면 켜지는 플래그
 
 /* USER CODE END PV */
 
@@ -107,6 +113,7 @@ static void MX_SPI3_Init(void);
 static void MX_SPI4_Init(void);
 static void MX_USART1_UART_Init(void);
 static void MX_USART2_UART_Init(void);
+static void MX_USART3_UART_Init(void);
 static void MX_I2C1_Init(void);
 static void MX_I2C3_Init(void);
 static void MX_TIM1_Init(void);
@@ -223,6 +230,7 @@ int main(void)
   MX_SPI4_Init();
   MX_USART1_UART_Init();
   MX_USART2_UART_Init();
+  MX_USART3_UART_Init();
   MX_I2C1_Init();
   MX_I2C3_Init();
   MX_TIM1_Init();
@@ -315,6 +323,16 @@ int main(void)
 
   //(void)uart1_printf("System Start\r\n");
 
+  N6_RCV_Init(&huart3); // N6 TX -> PD9 USART3_RX. 드론 쪽은 RX 하나만 사용
+  HAL_GPIO_WritePin(SPI4_RESET_GPIO_Port, SPI4_RESET_Pin, GPIO_PIN_RESET);
+  HAL_Delay(10);
+  HAL_GPIO_WritePin(SPI4_RESET_GPIO_Port, SPI4_RESET_Pin, GPIO_PIN_SET);
+  HAL_Delay(10);
+  lora_setup();
+  lora_freq();
+  packet_set();
+  telemetry_init();
+
   (void)HAL_TIM_Base_Start_IT(&htim2);
   (void)HAL_TIM_Base_Start_IT(&htim3);
 
@@ -334,17 +352,9 @@ int main(void)
     switch_update();
     //debug_process();
     uart_bridge_process();
-    if (gnss_read_pvt(&gnss_pvt)) {
-      (void)uart1_printf("GNSS fix:%u sv:%u lat:%ld lon:%ld hMSL:%ld hAcc:%lu vAcc:%lu gSpd:%ld\r\n",
-                         gnss_pvt.fix_type,
-                         gnss_pvt.satellites_used,
-                         gnss_pvt.latitude_deg_1e7,
-                         gnss_pvt.longitude_deg_1e7,
-                         gnss_pvt.height_msl_mm,
-                         gnss_pvt.horizontal_accuracy_mm,
-                         gnss_pvt.vertical_accuracy_mm,
-                         gnss_pvt.ground_speed_mm_s);
-    }
+    telemetry(); // LoRa/N6/GPS 전송 상태머신. 내부에서 오래 기다리지 않고 바로 return
+    // GNSS PVT는 telemetry.c에서 LoRa GPS 송신용으로 소비한다.
+    // 여기서 gnss_read_pvt()를 호출하면 최신 좌표 flag를 먼저 클리어해서 LoRa 송신을 방해할 수 있다.
     if (gnss_read_line(gnss_sentence, sizeof(gnss_sentence))) {
       (void)uart1_printf("%s\r\n", gnss_sentence);
     }
@@ -365,6 +375,7 @@ int main(void)
           sensor_process();
           (void)bno085_process();
           motor_rate_pid_update();
+          telemetry(); // 실제 주행 중에도 한 단계씩만 처리해서 제어 루프를 막지 않음
         }
 
         if ((sw_d_flag) || ((GPIOC->IDR & GPIO_PIN_8) == 0U)) {
@@ -771,11 +782,11 @@ static void MX_SPI4_Init(void)
   hspi4.Instance = SPI4;
   hspi4.Init.Mode = SPI_MODE_MASTER;
   hspi4.Init.Direction = SPI_DIRECTION_2LINES;
-  hspi4.Init.DataSize = SPI_DATASIZE_4BIT;
+  hspi4.Init.DataSize = SPI_DATASIZE_8BIT;
   hspi4.Init.CLKPolarity = SPI_POLARITY_LOW;
   hspi4.Init.CLKPhase = SPI_PHASE_1EDGE;
   hspi4.Init.NSS = SPI_NSS_SOFT;
-  hspi4.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_2;
+  hspi4.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_16;
   hspi4.Init.FirstBit = SPI_FIRSTBIT_MSB;
   hspi4.Init.TIMode = SPI_TIMODE_DISABLE;
   hspi4.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
@@ -1123,6 +1134,54 @@ static void MX_USART2_UART_Init(void)
 }
 
 /**
+  * @brief USART3 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_USART3_UART_Init(void)
+{
+
+  /* USER CODE BEGIN USART3_Init 0 */
+
+  /* USER CODE END USART3_Init 0 */
+
+  /* USER CODE BEGIN USART3_Init 1 */
+
+  /* USER CODE END USART3_Init 1 */
+  huart3.Instance = USART3;
+  huart3.Init.BaudRate = 115200;
+  huart3.Init.WordLength = UART_WORDLENGTH_8B;
+  huart3.Init.StopBits = UART_STOPBITS_1;
+  huart3.Init.Parity = UART_PARITY_NONE;
+  huart3.Init.Mode = UART_MODE_RX;
+  huart3.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart3.Init.OverSampling = UART_OVERSAMPLING_16;
+  huart3.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
+  huart3.Init.ClockPrescaler = UART_PRESCALER_DIV1;
+  huart3.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
+  if (HAL_UART_Init(&huart3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_UARTEx_SetTxFifoThreshold(&huart3, UART_TXFIFO_THRESHOLD_1_8) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_UARTEx_SetRxFifoThreshold(&huart3, UART_RXFIFO_THRESHOLD_1_8) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_UARTEx_DisableFifoMode(&huart3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN USART3_Init 2 */
+
+  /* USER CODE END USART3_Init 2 */
+
+}
+
+/**
   * @brief USART6 Initialization Function
   * @param None
   * @retval None
@@ -1208,6 +1267,12 @@ static void MX_DMA_Init(void)
   /* DMA2_Stream0_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA2_Stream0_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA2_Stream0_IRQn);
+  /* DMA2_Stream1_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA2_Stream1_IRQn, 5, 0);
+  HAL_NVIC_EnableIRQ(DMA2_Stream1_IRQn);
+  /* DMA2_Stream2_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA2_Stream2_IRQn, 5, 0);
+  HAL_NVIC_EnableIRQ(DMA2_Stream2_IRQn);
 
 }
 
@@ -1232,7 +1297,7 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOD_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(SPI4_CS_GPIO_Port, SPI4_CS_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(SPI4_CS_GPIO_Port, SPI4_CS_Pin, GPIO_PIN_SET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOC, SPI4_RESET_Pin|SPI1_RESET_Pin, GPIO_PIN_RESET);
@@ -1250,9 +1315,8 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_WritePin(SPI2_CS_GPIO_Port, SPI2_CS_Pin, GPIO_PIN_SET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOD, LED3_Pin|LED2_Pin|LED1_Pin|GPIO_PIN_11
-                          |GPIO_PIN_12|GPIO_PIN_13|GPIO_PIN_14|GPIO_PIN_15
-                          |SPI3_CS_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOD, LED3_Pin|LED1_Pin|GPIO_PIN_11|GPIO_PIN_12
+                          |GPIO_PIN_13|GPIO_PIN_14|GPIO_PIN_15|SPI3_CS_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin : SPI4_CS_Pin */
   GPIO_InitStruct.Pin = SPI4_CS_Pin;
@@ -1294,15 +1358,21 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : LED3_Pin LED2_Pin LED1_Pin PD11
-                           PD12 PD13 PD14 PD15
-                           SPI3_CS_Pin */
-  GPIO_InitStruct.Pin = LED3_Pin|LED2_Pin|LED1_Pin|GPIO_PIN_11
-                          |GPIO_PIN_12|GPIO_PIN_13|GPIO_PIN_14|GPIO_PIN_15
-                          |SPI3_CS_Pin;
+  /*Configure GPIO pins : LED3_Pin LED1_Pin PD11 PD12
+                           PD13 PD14 PD15 SPI3_CS_Pin */
+  GPIO_InitStruct.Pin = LED3_Pin|LED1_Pin|GPIO_PIN_11|GPIO_PIN_12
+                          |GPIO_PIN_13|GPIO_PIN_14|GPIO_PIN_15|SPI3_CS_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : PD9 */
+  GPIO_InitStruct.Pin = GPIO_PIN_9;
+  GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  GPIO_InitStruct.Alternate = GPIO_AF7_USART3;
   HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
 
   /*Configure GPIO pin : PC8 */

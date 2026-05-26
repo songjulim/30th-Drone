@@ -1,4 +1,5 @@
 #include "sensor.h"
+#include "lora.h"
 
 #include "debug.h"
 
@@ -638,6 +639,10 @@ void HAL_SPI_TxRxCpltCallback(SPI_HandleTypeDef *hspi)
     motion_sample_ready = 1U;
     spi2_who_am_i_ready = 1U;
   }
+  else if (hspi->Instance == SPI4)
+  {
+    LORA_SPI_TxRxCpltCallback(hspi);
+  }
 }
 
 void HAL_SPI_ErrorCallback(SPI_HandleTypeDef *hspi)
@@ -648,6 +653,10 @@ void HAL_SPI_ErrorCallback(SPI_HandleTypeDef *hspi)
     spi2_motion_dma_busy = 0U;
     motion_read_error = 1U;
     spi2_who_am_i_error = 1U;
+  }
+  else if (hspi->Instance == SPI4)
+  {
+    LORA_SPI_ErrorCallback(hspi);
   }
 }
 
@@ -665,5 +674,9 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
       motion_read_error = 1U;
       imuimu=1;
     }
+  }
+  else if (GPIO_Pin == SPI4_INT_Pin)
+  {
+    LORA_DIO_EXTI_Callback(GPIO_Pin);
   }
 }

@@ -1,6 +1,7 @@
 #include "gnss.h"
 
 #include "uart_bridge.h"
+#include "n6_rcv.h"
 
 #include <string.h>
 
@@ -515,7 +516,18 @@ void gnss_set_bridge_mode(uint8_t active)
 
 void gnss_handle_uart_error(UART_HandleTypeDef *huart)
 {
-  if ((huart == NULL) || (huart->Instance != USART2))
+  if (huart == NULL)
+  {
+    return;
+  }
+
+  if (huart->Instance == USART3)
+  {
+    N6_RCV_RxCpltCallback(huart);
+    return;
+  }
+
+  if (huart->Instance != USART2)
   {
     return;
   }
@@ -532,7 +544,18 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
   uint32_t primask;
 
-  if ((huart == NULL) || (huart->Instance != USART2))
+  if (huart == NULL)
+  {
+    return;
+  }
+
+  if (huart->Instance == USART3)
+  {
+    N6_RCV_RxCpltCallback(huart);
+    return;
+  }
+
+  if (huart->Instance != USART2)
   {
     return;
   }
